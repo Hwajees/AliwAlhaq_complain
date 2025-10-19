@@ -117,11 +117,19 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # تحقق من الرد من قبل المشرف
     if user.id in reply_targets:
         target_user_id = reply_targets.pop(user.id)
-        await context.bot.send_message(
+        try:
+            await context.bot.send_message(
             chat_id=target_user_id,
             text=f"📩 رد من الإدارة:\n{text}"
-        )
-        await update.message.reply_text("✅ تم إرسال الرد بنجاح.")
+            )
+            await update.message.reply_text("✅ تم إرسال الرد بنجاح.")
+        except Exception as e:
+            if "Forbiden" in str(e):
+                await update.message.reply_text(
+                    "⚠️ لا يمكن إرسال الرد — العضو لم يبدأ محادثة مع البوت."
+                )
+            else:
+                await update.message.reply_text(f"⚠️ حدث خطأ أثناء الإرسال: {e}")
         return
 
     # تحقق من الحد اليومي

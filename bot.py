@@ -30,11 +30,12 @@ WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
 if not BOT_TOKEN:
     raise RuntimeError("❌ BOT_TOKEN غير موجود في متغيرات البيئة.")
 
-# ------ ملفات الحظر والحد اليومي ------
+# ------ ملفات التخزين ------
 BLOCK_FILE = "blocked_users.json"
 DAILY_FILE = "daily_users.json"
-MAX_CHAR = 200  # حد الأحرف للعضو والمشرف
+MAX_CHAR = 200  # الحد الأقصى للأحرف
 
+# ------ دوال مساعدة ------
 def load_json(file_path):
     if os.path.exists(file_path):
         with open(file_path, "r") as f:
@@ -73,42 +74,40 @@ def can_send_today(user_id):
 # ------ إنشاء تطبيق البوت ------
 application = Application.builder().token(BOT_TOKEN).build()
 
-# ------ قاموس لتخزين الردود المؤقتة لكل مشرف ------
+# ------ قاموس الردود المؤقتة ------
 reply_targets = {}  # admin_id -> target_user_id
 
-# ------ دالة /start ------
+# ------ Handler الترحيب ------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type != "private":
-        return  # تجاهل أي استخدام للأمر داخل المجموعات
-
     user_id = update.message.from_user.id
     if is_blocked(user_id):
         await update.message.reply_text("⏸️ تم إيقافك مؤقتًا من إرسال الشكاوى لمدة 7 أيام.")
         return
-
     msg = (
-        "👋 مرحبًا بك!\n\n"
-        "📮 هذا البوت مخصص لاستقبال **الشكاوى والمقترحات** من أعضاء غرفة *علي مع الحق والحق مع علي*.\n\n"
-        f"📝 يمكنك إرسال **رسالة واحدة يوميًا** بحد أقصى **{MAX_CHAR} حرفًا**.\n"
-        "📂 سيتم عرض رسالتك في *موضوع الشكاوى والمقترحات* داخل مجموعة الإدارة.\n\n"
+        "👋 مرحبًا! هذا البوت مخصص لاستقبال شكاوى ومقترحات أعضاء "
+        "غرفة علي مع الحق والحق مع علي.\n\n"
+        f"📌 يمكنك إرسال رسالة واحدة يوميًا.\n"
+        f"✍️ الحد الأقصى للأحرف: {MAX_CHAR}\n"
+        "📝 سيتم عرض شكواك أو اقتراحك لإدارة الغرفة في موضوع الشكاوي والمقترحات.\n\n"
+        "📩 لتتمكن من استلام رد الإدارة، تأكد من بدء محادثة مع البوت وعدم كتمه.\n\n"
         "🔗 لمتابعة الغرفة الرئيسية: @AliwAlhaq"
     )
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await update.message.reply_text(msg)
 
-# ------ معالجة الرسائل الخاصة فقط ------
+# ------ Handler استقبال الرسائل الخاصة ------
 async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # تجاهل أي رسالة من المجموعات
     if update.effective_chat.type != "private":
         return
 
     user = update.message.from_user
     text = update.message.text.strip()
 
+    # تحقق من الطول
     if len(text) > MAX_CHAR:
         await update.message.reply_text(f"⚠️ الحد الأقصى لعدد الأحرف هو {MAX_CHAR}.")
         return
 
-    # تحقق إن كان هذا المشرف في وضع الرد
+    # تحقق إذا المشرف في وضع الرد
     if user.id in reply_targets:
         target_user_id = reply_targets[user.id]
         try:
@@ -117,13 +116,19 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=f"📩 رد من الإدارة:\n{text}"
             )
             await update.message.reply_text("✅ تم إرسال الرد بنجاح إلى العضو.")
+            await context.bot.send_message(
+                chat_id=ADMIN_GROUP_ID,
+                text=f"💬 تم إرسال رد من المشرف [{user.full_name}](tg://user?id={user.id}) إلى العضو `{target_user_id}`:\n\n{text}",
+                parse_mode="Markdown"
+            )
         except Exception as e:
-            await update.message.reply_text(f"⚠️ لم أتمكن من إرسال الرد: {e}")
+            logger.error(f"❌ خطأ أثناء إرسال الرد إلى {target_user_id}: {e}")
+            await update.message.reply_text("⚠️ لم أتمكن من إرسال الرد للعضو. ربما لم يبدأ محادثة مع البوت.")
         finally:
             del reply_targets[user.id]
         return
 
-    # عضو عادي يرسل شكوى
+    # تحقق إذا كان العضو موقوف أو تجاوز الحد اليومي
     if is_blocked(user.id):
         await update.message.reply_text("🚫 لا يمكنك إرسال شكاوى حاليًا. انتظر انتهاء مدة الإيقاف.")
         return
@@ -132,6 +137,7 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ يمكنك إرسال رسالة واحدة فقط يوميًا. حاول غدًا.")
         return
 
+    # رسالة الشكوى للإدارة
     complaint_msg = (
         f"📬 **شكوى جديدة**\n"
         f"👤 الاسم: {user.full_name}\n"
@@ -161,7 +167,7 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("✅ تم إرسال شكواك إلى الإدارة. سيتم التواصل معك عند الرد.")
 
-# ------ معالجة الأزرار ------
+# ------ Handler أزرار الإدارة ------
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -170,21 +176,37 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_id = query.from_user.id
 
     if action == "accept":
-        await context.bot.send_message(target_user_id, "✅ تم قبول شكواك. شكرًا لتعاونك!")
+        try:
+            await context.bot.send_message(target_user_id, "✅ تم قبول شكواك. شكرًا لتعاونك!")
+        except Exception as e:
+            logger.warning(f"⚠️ فشل إرسال القبول إلى {target_user_id}: {e}")
         await query.message.edit_text(query.message.text + "\n\n📢 تم القبول ✅", reply_markup=None)
 
     elif action == "reject":
-        await context.bot.send_message(target_user_id, "❌ تم رفض الشكوى بعد المراجعة.")
+        try:
+            await context.bot.send_message(target_user_id, "❌ تم رفض الشكوى بعد المراجعة.")
+        except Exception as e:
+            logger.warning(f"⚠️ فشل إرسال الرفض إلى {target_user_id}: {e}")
         await query.message.edit_text(query.message.text + "\n\n📢 تم الرفض ❌", reply_markup=None)
 
     elif action == "block":
         block_user(target_user_id)
-        await context.bot.send_message(target_user_id, "🚫 تم إيقافك من إرسال الشكاوى لمدة 7 أيام.")
+        try:
+            await context.bot.send_message(target_user_id, "🚫 تم إيقافك من إرسال الشكاوى لمدة 7 أيام.")
+        except Exception as e:
+            logger.warning(f"⚠️ فشل إخطار العضو بالإيقاف: {e}")
         await query.message.edit_text(query.message.text + "\n\n⏸️ العضو موقوف 7 أيام", reply_markup=None)
 
     elif action == "reply":
         reply_targets[admin_id] = target_user_id
-        await query.message.edit_text(query.message.text + "\n\n💬 أرسل الرد الآن في الخاص ليتم توجيهه للعضو.", reply_markup=None)
+        await query.message.edit_text(
+            query.message.text + "\n\n💬 أرسل الرد الآن في الخاص ليتم توجيهه للعضو.",
+            reply_markup=None
+        )
+        await context.bot.send_message(
+            chat_id=admin_id,
+            text="📩 أرسل الآن الرد في الخاص ليتم توجيهه إلى العضو."
+        )
 
 # ------ إضافة Handlers ------
 application.add_handler(CommandHandler("start", start))
@@ -193,6 +215,7 @@ application.add_handler(CallbackQueryHandler(handle_buttons))
 
 # ------ تشغيل Webhook ------
 async_loop = None
+
 def run_async_loop():
     global async_loop
     async_loop = asyncio.new_event_loop()
@@ -210,7 +233,7 @@ def run_async_loop():
 
 threading.Thread(target=run_async_loop, daemon=True).start()
 
-# ------ Flask Webhook Route ------
+# ------ Flask Webhook ------
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def telegram_webhook():
     try:
@@ -227,7 +250,7 @@ def telegram_webhook():
         logger.exception(f"❌ خطأ في استلام webhook: {e}")
         return "Error", 500
 
-# ------ تشغيل Flask ------
+# ------ بدء Flask ------
 if __name__ == "__main__":
     logger.info("🚀 بدأ تشغيل Flask - الخادم سيستمع للطلبات")
     app.run(host="0.0.0.0", port=PORT)

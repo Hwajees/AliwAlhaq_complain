@@ -83,6 +83,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_complaint(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
+
+    # ✅ استثناء المشرفين الذين ينتظرون الرد
+    if user.id in reply_targets:
+        return  # الرسالة ستذهب لـ handle_reply_message فقط
+
     text = update.message.text.strip()
 
     if is_blocked(user.id):
@@ -174,7 +179,6 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_handlers.pop(admin_id)
             reply_targets.pop(admin_id)
 
-        # إضافة Handler جديد مع الفلاتر الصحيحة
         handler = MessageHandler(
             filters.User(admin_id) & filters.ChatType.PRIVATE & filters.TEXT,
             handle_reply_message

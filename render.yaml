@@ -1,16 +1,17 @@
 services:
   - type: web
-    name: telegram-complaints-bot
+    name: telegram-complaint-bot
     env: python
+    region: frankfurt
     plan: free
     buildCommand: ""
-    startCommand: "python main.py"
+    startCommand: "python bot.py"
     envVars:
       - key: BOT_TOKEN
-        value: your-bot-token-here
-      - key: Main_Group_ID
-        value: -4949122709
-      - key: Admin_Group_ID
-        value: -1003131818226
-      - key: Admin_Group_topic_ID
-        value: 2
+        sync: false
+      - key: MAIN_GROUP_ID
+        sync: false
+      - key: ADMIN_GROUP_ID
+        sync: false
+      - key: ADMIN_GROUP_TOPIC_ID
+        sync: false

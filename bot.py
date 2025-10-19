@@ -33,8 +33,7 @@ if not BOT_TOKEN:
 # ------ ملفات البيانات ------
 BLOCK_FILE = "blocked_users.json"
 DAILY_LIMIT_FILE = "daily_limit.json"
-
-MAX_CHARS = 200  # الحد الأقصى للأحرف لكل رسالة
+MAX_CHARS = 200
 
 def load_json(file_path):
     if os.path.exists(file_path):
@@ -46,7 +45,7 @@ def save_json(file_path, data):
     with open(file_path, "w") as f:
         json.dump(data, f)
 
-# ------ وظائف الإيقاف ------
+# ------ الإيقاف ------
 def is_blocked(user_id):
     data = load_json(BLOCK_FILE)
     if str(user_id) in data:
@@ -63,7 +62,7 @@ def block_user(user_id, days=7):
     data[str(user_id)] = (datetime.now() + timedelta(days=days)).isoformat()
     save_json(BLOCK_FILE, data)
 
-# ------ وظائف الحد اليومي ------
+# ------ الحد اليومي ------
 def can_send_today(user_id):
     data = load_json(DAILY_LIMIT_FILE)
     today = datetime.now().date().isoformat()
@@ -80,7 +79,7 @@ def mark_sent_today(user_id):
 # ------ إنشاء تطبيق البوت ------
 application = Application.builder().token(BOT_TOKEN).build()
 
-# ------ قاموس الردود المؤقتة لكل مشرف ------
+# ------ قاموس الردود المؤقتة ------
 reply_targets = {}  # admin_id -> target_user_id
 
 # ------ نصوص الرسائل ------
@@ -88,50 +87,55 @@ welcome_text = (
     f"👋 مرحبًا بك في بوت الشكاوى والمقترحات!\n\n"
     f"📢 هذا البوت مخصص لاستقبال شكاوى ومقترحات أعضاء **غرفة علي مع الحق والحق مع علي**.\n"
     f"📝 جميع الشكاوى والمقترحات سيتم عرضها مباشرة على إدارة الغرفة لمراجعتها.\n\n"
-    f"💬 ملاحظة:\n"
+    f"💬 ملاحظات:\n"
     f"- الحد اليومي لكل عضو: رسالة واحدة فقط.\n"
     f"- الحد الأقصى للأحرف لكل رسالة: {MAX_CHARS} حرف.\n\n"
-    f"🔗 للرجوع إلى الغرفة: [غرفة علي مع الحق](https://t.me/AliwAlhaq)"
+    f"🔗 [الانتقال إلى الغرفة](https://t.me/AliwAlhaq)"
 )
 
-accept_text = (
-    "✅ تم قبول شكواك بنجاح!\n\n"
-    "📌 شكركم على تواصلكم معنا، سيتم التعامل مع شكواك وفق الإجراءات المعتمدة.\n"
-    "💡 نسعى دائمًا لتحسين تجربة الأعضاء في الغرفة."
-)
-
-reject_text = (
-    "❌ تم رفض شكواك بعد المراجعة.\n\n"
-    "📌 نعتذر عن أي إزعاج، وإذا كان لديك أي استفسار أو توضيح، يمكنك التواصل معنا مرة أخرى.\n"
-    "💡 هدفنا دائمًا هو تحسين جودة النقاش والخدمة للأعضاء."
-)
+accept_text = "✅ تم قبول شكواك. شكرًا لتعاونك معنا!"
+reject_text = "❌ تم رفض الشكوى بعد المراجعة."
 
 # ------ Handlers المستخدم ------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if is_blocked(user_id):
+        await update.message.reply_text("⏸️ تم إيقافك مؤقتًا من إرسال الشكاوى لمدة 7 أيام.")
+        return
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
 async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     text = update.message.text.strip()
 
+    # تحقق من الرد من قبل المشرف
+    if user.id in reply_targets:
+        target_user_id = reply_targets.pop(user.id)
+        await context.bot.send_message(
+            chat_id=target_user_id,
+            text=f"📩 رد من الإدارة:\n{text}"
+        )
+        await update.message.reply_text("✅ تم إرسال الرد بنجاح.")
+        return
+
     # تحقق من الحد اليومي
     if not can_send_today(user.id):
-        await update.message.reply_text("⚠️ يمكنك إرسال رسالة واحدة فقط يوميًا. حاول مرة أخرى غدًا.")
+        await update.message.reply_text("⚠️ يمكنك إرسال رسالة واحدة فقط يوميًا.")
         return
 
     # تحقق من الحد الأقصى للأحرف
     if len(text) > MAX_CHARS:
         await update.message.reply_text(
-            f"⚠️ لا يمكن إرسال أكثر من {MAX_CHARS} حرفًا. رسالتك الحالية تحتوي على {len(text)} حرفًا."
+            f"⚠️ الحد الأقصى {MAX_CHARS} حرف. رسالتك تحتوي على {len(text)} حرف."
         )
         return
 
     # تحقق من الإيقاف
     if is_blocked(user.id):
-        await update.message.reply_text("⏸️ تم إيقافك مؤقتًا من إرسال الشكاوى لمدة 7 أيام.")
+        await update.message.reply_text("⏸️ لا يمكنك إرسال الشكاوى حاليًا.")
         return
 
-    # بعد التحقق، سجل إرسال الرسالة اليوم
+    # سجل الإرسال اليومي
     mark_sent_today(user.id)
 
     # إرسال الشكوى للإدارة
@@ -175,11 +179,11 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_id = query.from_user.id
 
     if action == "accept":
-        await context.bot.send_message(target_user_id, accept_text, parse_mode="Markdown")
+        await context.bot.send_message(target_user_id, accept_text)
         await query.message.edit_text(query.message.text + "\n\n📢 تم القبول ✅", reply_markup=None)
 
     elif action == "reject":
-        await context.bot.send_message(target_user_id, reject_text, parse_mode="Markdown")
+        await context.bot.send_message(target_user_id, reject_text)
         await query.message.edit_text(query.message.text + "\n\n📢 تم الرفض ❌", reply_markup=None)
 
     elif action == "block":
@@ -190,22 +194,13 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "reply":
         reply_targets[admin_id] = target_user_id
         await query.message.edit_text(
-            query.message.text + "\n\n💬 أرسل الرد الآن ليتم توجيهه للعضو.",
+            query.message.text + "\n\n💬 أرسل الرد الآن في الخاص ليتم توجيهه للعضو.",
             reply_markup=None
         )
-
-# ------ Handler رسائل الرد من المشرف ------
-async def handle_reply_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    admin_id = update.message.from_user.id
-    if admin_id in reply_targets:
-        target_user_id = reply_targets.pop(admin_id)
-        await context.bot.send_message(target_user_id, update.message.text)
-        await update.message.reply_text("✅ تم إرسال الرد للعضو بنجاح!")
 
 # ------ إضافة Handlers ------
 application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_private))
-application.add_handler(MessageHandler(filters.TEXT & filters.User(list(reply_targets.keys())), handle_reply_message))
 application.add_handler(CallbackQueryHandler(handle_buttons))
 
 # ------ تشغيل Webhook في Thread منفصل ------

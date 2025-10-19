@@ -4,10 +4,11 @@ import json
 import logging
 import asyncio
 import threading
+from datetime import datetime, timedelta
 from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 )
 
 # ------ إعداد السجلات ------
@@ -31,40 +32,49 @@ if not BOT_TOKEN:
 
 # ------ ملف الموقوفين ------
 BLOCK_FILE = "blocked_users.json"
+DAILY_FILE = "daily_users.json"
+MAX_CHAR = 200  # حد الأحرف للعضو والمشرف
 
-def load_blocked():
-    if os.path.exists(BLOCK_FILE):
-        with open(BLOCK_FILE, "r") as f:
+def load_json(file_path):
+    if os.path.exists(file_path):
+        with open(file_path, "r") as f:
             return json.load(f)
     return {}
 
-def save_blocked(data):
-    with open(BLOCK_FILE, "w") as f:
+def save_json(file_path, data):
+    with open(file_path, "w") as f:
         json.dump(data, f)
 
 def is_blocked(user_id):
-    data = load_blocked()
-    from datetime import datetime
+    data = load_json(BLOCK_FILE)
     if str(user_id) in data:
         expire = datetime.fromisoformat(data[str(user_id)])
         if datetime.now() < expire:
             return True
         else:
             del data[str(user_id)]
-            save_blocked(data)
+            save_json(BLOCK_FILE, data)
     return False
 
 def block_user(user_id, days=7):
-    from datetime import datetime, timedelta
-    data = load_blocked()
+    data = load_json(BLOCK_FILE)
     data[str(user_id)] = (datetime.now() + timedelta(days=days)).isoformat()
-    save_blocked(data)
+    save_json(BLOCK_FILE, data)
+
+def can_send_today(user_id):
+    data = load_json(DAILY_FILE)
+    today = datetime.now().date().isoformat()
+    if str(user_id) in data and data[str(user_id)] == today:
+        return False
+    data[str(user_id)] = today
+    save_json(DAILY_FILE, data)
+    return True
 
 # ------ إنشاء تطبيق البوت ------
 application = Application.builder().token(BOT_TOKEN).build()
 
 # ------ قاموس لتخزين الردود المؤقتة لكل مشرف ------
-reply_targets = {}    # admin_id -> target_user_id
+reply_targets = {}  # admin_id -> target_user_id
 
 # ------ Handlers المستخدم ------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -72,38 +82,46 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_blocked(user_id):
         await update.message.reply_text("⏸️ تم إيقافك مؤقتًا من إرسال الشكاوى لمدة 7 أيام.")
         return
-    welcome_text = (
-        "👋 مرحبًا! هذا البوت مخصص لاستقبال الشكاوى والاقتراحات لأعضاء غرفة علي مع الحق.\n\n"
-        "📌 يمكنك إرسال شكوى أو اقتراح واحد يوميًا.\n"
-        "📝 الحد الأقصى لكل رسالة: 200 حرف.\n"
-        "🔗 رابط الغرفة: @AliwAlhaq\n\n"
-        "سيتم عرض جميع الشكاوى والمقترحات في موضوع الشكاوى والمقترحات داخل مجموعة الإدارة."
+    msg = (
+        "👋 مرحبًا! هذا البوت مخصص لاستقبال شكاوى ومقترحات أعضاء "
+        "غرفة علي مع الحق والحق مع علي.\n\n"
+        f"📌 يمكنك إرسال رسالة واحدة يوميًا.\n"
+        f"✍️ الحد الأقصى للأحرف: {MAX_CHAR}\n"
+        "📝 سيتم عرض شكواك أو اقتراحك لإدارة الغرفة في موضوع الشكاوي والمقترحات.\n\n"
+        "🔗 لمتابعة الغرفة الرئيسية: @AliwAlhaq"
     )
-    await update.message.reply_text(welcome_text)
+    await update.message.reply_text(msg)
 
 async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     text = update.message.text.strip()
 
-    # الحد الأقصى للأحرف
-    if len(text) > 200:
-        await update.message.reply_text("⚠️ لا يمكن إرسال أكثر من 200 حرف في الرسالة.")
+    if len(text) > MAX_CHAR:
+        await update.message.reply_text(f"⚠️ الحد الأقصى لعدد الأحرف هو {MAX_CHAR}.")
         return
 
-    # إذا كان المرسل مشرف ينتظر الرد
+    # تحقق إذا هذا المشرف في وضع الرد
     if user.id in reply_targets:
         target_user_id = reply_targets[user.id]
-        await context.bot.send_message(
-            chat_id=target_user_id,
-            text=f"📩 رد من الإدارة:\n{text}"
-        )
-        await update.message.reply_text("✅ تم إرسال الرد بنجاح.")
-        del reply_targets[user.id]  # إزالة بعد الإرسال
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=f"📩 رد من الإدارة:\n{text}"
+            )
+            await update.message.reply_text("✅ تم إرسال الرد بنجاح إلى العضو.")
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ لم أتمكن من إرسال الرد: {e}")
+        finally:
+            del reply_targets[user.id]
         return
 
     # إذا كان العضو عادي
     if is_blocked(user.id):
         await update.message.reply_text("⏸️ لا يمكنك إرسال شكاوى حاليًا. انتظر انتهاء مدة الإيقاف.")
+        return
+
+    if not can_send_today(user.id):
+        await update.message.reply_text("⚠️ يمكنك إرسال رسالة واحدة فقط يوميًا. حاول غدًا.")
         return
 
     complaint_msg = (
@@ -162,7 +180,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ------ إضافة Handlers ------
 application.add_handler(CommandHandler("start", start))
-application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, handle_private))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_private))
 application.add_handler(CallbackQueryHandler(handle_buttons))
 
 # ------ تشغيل Webhook في Thread منفصل ------

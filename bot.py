@@ -190,13 +190,22 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "reply":
         reply_targets[admin_id] = target_user_id
         await query.message.edit_text(
-            query.message.text + "\n\n💬 أرسل الرد الآن في الخاص ليتم توجيهه للعضو.",
+            query.message.text + "\n\n💬 أرسل الرد الآن ليتم توجيهه للعضو.",
             reply_markup=None
         )
+
+# ------ Handler رسائل الرد من المشرف ------
+async def handle_reply_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admin_id = update.message.from_user.id
+    if admin_id in reply_targets:
+        target_user_id = reply_targets.pop(admin_id)
+        await context.bot.send_message(target_user_id, update.message.text)
+        await update.message.reply_text("✅ تم إرسال الرد للعضو بنجاح!")
 
 # ------ إضافة Handlers ------
 application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_private))
+application.add_handler(MessageHandler(filters.TEXT & filters.User(list(reply_targets.keys())), handle_reply_message))
 application.add_handler(CallbackQueryHandler(handle_buttons))
 
 # ------ تشغيل Webhook في Thread منفصل ------

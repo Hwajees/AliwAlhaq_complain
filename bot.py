@@ -60,12 +60,6 @@ def block_user(user_id, days=7):
     data[str(user_id)] = (datetime.now() + timedelta(days=days)).isoformat()
     save_blocked(data)
 
-def unblock_user(user_id):
-    data = load_blocked()
-    if str(user_id) in data:
-        del data[str(user_id)]
-        save_blocked(data)
-
 # ------ إنشاء تطبيق البوت ------
 application = Application.builder().token(BOT_TOKEN).build()
 
@@ -92,8 +86,7 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text=f"📩 رد من الإدارة:\n{text}"
         )
         await update.message.reply_text("✅ تم إرسال الرد بنجاح.")
-        # إزالة المشرف من القاموس بعد الإرسال
-        del reply_targets[user.id]
+        del reply_targets[user.id]  # إزالة بعد الإرسال
         return
 
     # إذا كان العضو عادي
@@ -116,8 +109,7 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ],
         [
             InlineKeyboardButton("💬 رد", callback_data=f"reply:{user.id}"),
-            InlineKeyboardButton("⏸️ إيقاف 7 أيام", callback_data=f"block:{user.id}"),
-            InlineKeyboardButton("🔓 رفع الإيقاف", callback_data=f"unblock:{user.id}")
+            InlineKeyboardButton("⏸️ إيقاف 7 أيام", callback_data=f"block:{user.id}")
         ]
     ])
 
@@ -141,30 +133,23 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "accept":
         await context.bot.send_message(target_user_id, "✅ تم قبول شكواك. شكرًا لتعاونك!")
-        await query.message.edit_text(query.message.text + "\n\n📢 تم القبول ✅")
+        await query.message.edit_text(query.message.text + "\n\n📢 تم القبول ✅", reply_markup=None)
 
     elif action == "reject":
         await context.bot.send_message(target_user_id, "❌ تم رفض الشكوى بعد المراجعة.")
-        await query.message.edit_text(query.message.text + "\n\n📢 تم الرفض ❌")
+        await query.message.edit_text(query.message.text + "\n\n📢 تم الرفض ❌", reply_markup=None)
 
     elif action == "block":
         block_user(target_user_id)
         await context.bot.send_message(target_user_id, "🚫 تم إيقافك من إرسال الشكاوى لمدة 7 أيام.")
-        await query.message.edit_text(query.message.text + "\n\n⏸️ العضو موقوف 7 أيام")
-
-    elif action == "unblock":
-        unblock_user(target_user_id)
-        await context.bot.send_message(target_user_id, "✅ تم رفع الإيقاف عنك ويمكنك الآن إرسال الشكاوى مجددًا.")
-        await query.message.edit_text(query.message.text + "\n\n🔓 تم رفع الإيقاف")
+        await query.message.edit_text(query.message.text + "\n\n⏸️ العضو موقوف 7 أيام", reply_markup=None)
 
     elif action == "reply":
-        # سجل العضو الذي سيرد المشرف له
         reply_targets[admin_id] = target_user_id
-        await query.message.reply_text("💬 أرسل الرد الآن في الخاص ليتم توجيهه للعضو.")
+        await query.message.edit_text(query.message.text + "\n\n💬 أرسل الرد الآن في الخاص ليتم توجيهه للعضو.", reply_markup=None)
 
 # ------ إضافة Handlers ------
 application.add_handler(CommandHandler("start", start))
-# كل الرسائل الخاصة تمر من هنا
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_private))
 application.add_handler(CallbackQueryHandler(handle_buttons))
 

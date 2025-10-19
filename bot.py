@@ -121,12 +121,23 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_id = pop_reply(user.id)
     if target_id:
         try:
-            await context.bot.get_chat(target_id)  # تحقق أن العضو موجود ويمكن التواصل معه
-            await context.bot.send_message(target_id, f"📩 رد من الإدارة:\n\n{text}")
+            # التأكد من أن العضو يمكن التواصل معه فعليًا
+            chat_info = await context.bot.get_chat(target_id)
+            await context.bot.send_message(
+                chat_id=target_id,
+                text=f"📩 رد من الإدارة:\n\n{text}"
+            )
             await update.message.reply_text("✅ تم إرسال الرد بنجاح إلى العضو.")
         except Exception as e:
-            logger.error(f"خطأ أثناء إرسال الرد: {e}")
-            await update.message.reply_text("⚠️ تعذر إرسال الرد للعضو. ربما غادر أو حظر البوت.")
+            logger.error(f"❌ خطأ أثناء إرسال الرد: {e}")
+            # إبلاغ المشرف بالسبب الحقيقي
+            await update.message.reply_text(
+                "⚠️ لم أتمكن من إرسال الرد للعضو.\n"
+                "🚫 السبب المحتمل:\n"
+                "- العضو غادر المحادثة مع البوت.\n"
+                "- أو فعّل إعداد الخصوصية ضد الرسائل من البوتات.\n\n"
+                "✅ في هذه الحالة يمكن التواصل معه يدويًا."
+            )
         return
 
     # عضو عادي يرسل شكوى

@@ -1,25 +1,34 @@
-import json
+# bot.py
 import os
-from datetime import datetime, timedelta
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+import json
+import logging
 import asyncio
+import threading
+from flask import Flask, request
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 
-# تحميل المتغيرات من البيئة
+# ------ إعداد السجلات ------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("complaint-bot")
+
+# ------ إعداد Flask ------
+app = Flask(__name__)
+
+# ------ متغيرات البيئة ------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-MAIN_GROUP_ID = int(os.getenv("MAIN_GROUP_ID"))
-ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))
-ADMIN_GROUP_TOPIC_ID = int(os.getenv("ADMIN_GROUP_TOPIC_ID"))
+MAIN_GROUP_ID = int(os.getenv("MAIN_GROUP_ID"))       # المجموعة العامة
+ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))     # مجموعة الإدارة
+ADMIN_GROUP_TOPIC_ID = int(os.getenv("ADMIN_GROUP_TOPIC_ID", "0"))  # Topic داخل مجموعة الإدارة
+PORT = int(os.getenv("PORT", "10000"))
+WEBHOOK_PATH = f"/{BOT_TOKEN}"
+WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+if not BOT_TOKEN:
+    raise RuntimeError("❌ BOT_TOKEN غير موجود في متغيرات البيئة.")
 
+# ------ ملف الموقوفين ------
 BLOCK_FILE = "blocked_users.json"
-
-
-# ---------------------- وظائف مساعدة ----------------------
 
 def load_blocked():
     if os.path.exists(BLOCK_FILE):
@@ -34,6 +43,7 @@ def save_blocked(data):
 def is_blocked(user_id):
     data = load_blocked()
     if str(user_id) in data:
+        from datetime import datetime
         expire = datetime.fromisoformat(data[str(user_id)])
         if datetime.now() < expire:
             return True
@@ -43,6 +53,7 @@ def is_blocked(user_id):
     return False
 
 def block_user(user_id, days=7):
+    from datetime import datetime, timedelta
     data = load_blocked()
     data[str(user_id)] = (datetime.now() + timedelta(days=days)).isoformat()
     save_blocked(data)
@@ -53,101 +64,133 @@ def unblock_user(user_id):
         del data[str(user_id)]
         save_blocked(data)
 
+# ------ إنشاء تطبيق البوت ------
+application = Application.builder().token(BOT_TOKEN).build()
 
-# ---------------------- أوامر المستخدم ----------------------
-
-@dp.message(CommandStart())
-async def start(message: types.Message):
-    member = await bot.get_chat_member(MAIN_GROUP_ID, message.from_user.id)
-    if member.status in ["left", "kicked"]:
-        await message.answer("🚫 يجب أن تكون عضوًا في المجموعة العامة لاستخدام هذا البوت.")
+# ------ أوامر المستخدم ------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if is_blocked(user_id):
+        await update.message.reply_text("⏸️ تم إيقافك مؤقتًا من إرسال الشكاوى لمدة 7 أيام.")
         return
+    await update.message.reply_text("👋 مرحبًا! أرسل شكواك أو اقتراحك هنا.")
 
-    if is_blocked(message.from_user.id):
-        await message.answer("⏸️ تم إيقافك مؤقتًا من إرسال الشكاوى لمدة 7 أيام.")
+async def handle_complaint(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.from_user
+    text = update.message.text.strip()
+
+    if is_blocked(user.id):
+        await update.message.reply_text("⏸️ لا يمكنك إرسال شكاوى حاليًا. انتظر انتهاء مدة الإيقاف.")
         return
-
-    await message.answer("مرحبًا 👋\nأرسل الآن الشكوى أو الاقتراح الذي ترغب في تقديمه.")
-
-
-@dp.message(F.text)
-async def receive_complaint(message: types.Message):
-    if is_blocked(message.from_user.id):
-        await message.answer("⏸️ لا يمكنك إرسال شكاوى حاليًا. انتظر انتهاء مدة الإيقاف.")
-        return
-
-    user = message.from_user
-    text = message.text.strip()
 
     complaint_msg = (
         f"📬 **شكوى جديدة**\n"
         f"👤 الاسم: {user.full_name}\n"
         f"🆔 ID: `{user.id}`\n"
         f"🗣️ المستخدم: @{user.username if user.username else 'بدون'}\n"
-        f"🕓 التاريخ: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"💬 **النص:** {text}"
     )
 
-    # إنشاء أزرار التحكم للإدارة
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ قبول", callback_data=f"accept:{user.id}"),
-         InlineKeyboardButton(text="❌ رفض", callback_data=f"reject:{user.id}")],
-        [InlineKeyboardButton(text="💬 رد", callback_data=f"reply:{user.id}"),
-         InlineKeyboardButton(text="⏸️ إيقاف 7 أيام", callback_data=f"block:{user.id}"),
-         InlineKeyboardButton(text="🔓 رفع الإيقاف", callback_data=f"unblock:{user.id}")]
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ قبول", callback_data=f"accept:{user.id}"),
+            InlineKeyboardButton("❌ رفض", callback_data=f"reject:{user.id}")
+        ],
+        [
+            InlineKeyboardButton("💬 رد", callback_data=f"reply:{user.id}"),
+            InlineKeyboardButton("⏸️ إيقاف 7 أيام", callback_data=f"block:{user.id}"),
+            InlineKeyboardButton("🔓 رفع الإيقاف", callback_data=f"unblock:{user.id}")
+        ]
     ])
 
-    # إرسال الشكوى إلى التوبيك الإداري
-    await bot.send_message(
+    await application.bot.send_message(
         chat_id=ADMIN_GROUP_ID,
         text=complaint_msg,
         parse_mode="Markdown",
-        message_thread_id=ADMIN_GROUP_TOPIC_ID,
-        reply_markup=keyboard
+        reply_markup=keyboard,
+        message_thread_id=ADMIN_GROUP_TOPIC_ID if ADMIN_GROUP_TOPIC_ID != 0 else None
     )
 
-    await message.answer("✅ تم إرسال شكواك إلى الإدارة. سيتم التواصل معك عند الرد.")
+    await update.message.reply_text("✅ تم إرسال شكواك إلى الإدارة. سيتم التواصل معك عند الرد.")
 
-
-# ---------------------- تفاعل الإدارة ----------------------
-
-@dp.callback_query(F.data.startswith(("accept", "reject", "reply", "block", "unblock")))
-async def admin_actions(callback: types.CallbackQuery):
-    action, user_id = callback.data.split(":")
+# ------ أزرار الإدارة ------
+async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    action, user_id = query.data.split(":")
     user_id = int(user_id)
 
     if action == "accept":
-        await bot.send_message(user_id, "✅ تم قبول شكواك. شكرًا لتعاونك!")
-        await callback.message.edit_text(callback.message.text + "\n\n📢 تم القبول ✅")
+        await application.bot.send_message(user_id, "✅ تم قبول شكواك. شكرًا لتعاونك!")
+        await query.message.edit_text(query.message.text + "\n\n📢 تم القبول ✅")
 
     elif action == "reject":
-        await bot.send_message(user_id, "❌ تم رفض الشكوى بعد المراجعة.")
-        await callback.message.edit_text(callback.message.text + "\n\n📢 تم الرفض ❌")
+        await application.bot.send_message(user_id, "❌ تم رفض الشكوى بعد المراجعة.")
+        await query.message.edit_text(query.message.text + "\n\n📢 تم الرفض ❌")
 
     elif action == "block":
         block_user(user_id)
-        await bot.send_message(user_id, "🚫 تم إيقافك من إرسال الشكاوى لمدة 7 أيام.")
-        await callback.message.edit_text(callback.message.text + "\n\n⏸️ العضو موقوف 7 أيام")
+        await application.bot.send_message(user_id, "🚫 تم إيقافك من إرسال الشكاوى لمدة 7 أيام.")
+        await query.message.edit_text(query.message.text + "\n\n⏸️ العضو موقوف 7 أيام")
 
     elif action == "unblock":
         unblock_user(user_id)
-        await bot.send_message(user_id, "✅ تم رفع الإيقاف عنك ويمكنك الآن إرسال الشكاوى مجددًا.")
-        await callback.message.edit_text(callback.message.text + "\n\n🔓 تم رفع الإيقاف")
+        await application.bot.send_message(user_id, "✅ تم رفع الإيقاف عنك ويمكنك الآن إرسال الشكاوى مجددًا.")
+        await query.message.edit_text(query.message.text + "\n\n🔓 تم رفع الإيقاف")
 
     elif action == "reply":
-        await callback.message.answer("💬 أرسل الرد الآن ليتم توجيهه للعضو:")
+        await query.message.reply_text("💬 أرسل الرد الآن ليتم توجيهه للعضو:")
 
-        @dp.message(F.text)
-        async def reply_msg(msg: types.Message):
-            await bot.send_message(user_id, f"📩 رد من الإدارة:\n{msg.text}")
-            await msg.answer("✅ تم إرسال الرد.")
-            dp.message.handlers.unregister(reply_msg)
+        async def reply_msg(msg_update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+            await application.bot.send_message(user_id, f"📩 رد من الإدارة:\n{msg_update.message.text}")
+            await msg_update.message.reply_text("✅ تم إرسال الرد.")
+            application.remove_handler(reply_msg)
 
-    await callback.answer()
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply_msg))
 
-# ---------------------- تشغيل البوت ----------------------
+# ------ إضافة Handlers ------
+application.add_handler(CommandHandler("start", start))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_complaint))
+application.add_handler(CallbackQueryHandler(handle_buttons))
 
+# ------ تشغيل Webhook في Thread منفصل ------
+async_loop = None
+
+def run_async_loop():
+    global async_loop
+    async_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(async_loop)
+
+    async def init_app():
+        await application.initialize()
+        try:
+            await application.bot.set_webhook(WEBHOOK_URL)
+            logger.info(f"✅ تم ضبط webhook -> {WEBHOOK_URL}")
+        except Exception as ex:
+            logger.warning(f"⚠️ لم أتمكن من ضبط webhook تلقائيًا: {ex}")
+    async_loop.run_until_complete(init_app())
+    async_loop.run_forever()
+
+threading.Thread(target=run_async_loop, daemon=True).start()
+
+# ------ مسار Webhook للـ Flask ------
+@app.route(WEBHOOK_PATH, methods=["POST"])
+def telegram_webhook():
+    try:
+        data = request.get_json(force=True)
+        if not data:
+            return "No data", 400
+        update = Update.de_json(data, application.bot)
+        if async_loop is None:
+            logger.error("❌ الحلقة غير جاهزة بعد")
+            return "Service not ready", 503
+        asyncio.run_coroutine_threadsafe(application.process_update(update), async_loop)
+        return "OK", 200
+    except Exception as e:
+        logger.exception(f"❌ خطأ في استلام webhook: {e}")
+        return "Error", 500
+
+# ------ بدء Flask ------
 if __name__ == "__main__":
-    import asyncio
-    print("🚀 Bot is running...")
-    asyncio.run(dp.start_polling(bot))
+    logger.info("🚀 بدأ تشغيل Flask - الخادم سيستمع للطلبات")
+    app.run(host="0.0.0.0", port=PORT)

@@ -6,7 +6,9 @@ import asyncio
 import threading
 from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
+)
 
 # ------ إعداد السجلات ------
 logging.basicConfig(level=logging.INFO)
@@ -42,8 +44,8 @@ def save_blocked(data):
 
 def is_blocked(user_id):
     data = load_blocked()
+    from datetime import datetime
     if str(user_id) in data:
-        from datetime import datetime
         expire = datetime.fromisoformat(data[str(user_id)])
         if datetime.now() < expire:
             return True
@@ -117,40 +119,44 @@ async def handle_complaint(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    action, user_id = query.data.split(":")
-    user_id = int(user_id)
+    action, target_user_id = query.data.split(":")
+    target_user_id = int(target_user_id)
 
     if action == "accept":
-        await application.bot.send_message(user_id, "✅ تم قبول شكواك. شكرًا لتعاونك!")
+        await application.bot.send_message(target_user_id, "✅ تم قبول شكواك. شكرًا لتعاونك!")
         await query.message.edit_text(query.message.text + "\n\n📢 تم القبول ✅")
 
     elif action == "reject":
-        await application.bot.send_message(user_id, "❌ تم رفض الشكوى بعد المراجعة.")
+        await application.bot.send_message(target_user_id, "❌ تم رفض الشكوى بعد المراجعة.")
         await query.message.edit_text(query.message.text + "\n\n📢 تم الرفض ❌")
 
     elif action == "block":
-        block_user(user_id)
-        await application.bot.send_message(user_id, "🚫 تم إيقافك من إرسال الشكاوى لمدة 7 أيام.")
+        block_user(target_user_id)
+        await application.bot.send_message(target_user_id, "🚫 تم إيقافك من إرسال الشكاوى لمدة 7 أيام.")
         await query.message.edit_text(query.message.text + "\n\n⏸️ العضو موقوف 7 أيام")
 
     elif action == "unblock":
-        unblock_user(user_id)
-        await application.bot.send_message(user_id, "✅ تم رفع الإيقاف عنك ويمكنك الآن إرسال الشكاوى مجددًا.")
+        unblock_user(target_user_id)
+        await application.bot.send_message(target_user_id, "✅ تم رفع الإيقاف عنك ويمكنك الآن إرسال الشكاوى مجددًا.")
         await query.message.edit_text(query.message.text + "\n\n🔓 تم رفع الإيقاف")
 
     elif action == "reply":
+        # حفظ حالة الرد في user_data
+        context.user_data["reply_to"] = target_user_id
         await query.message.reply_text("💬 أرسل الرد الآن ليتم توجيهه للعضو:")
 
-        async def reply_msg(msg_update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-            await application.bot.send_message(user_id, f"📩 رد من الإدارة:\n{msg_update.message.text}")
-            await msg_update.message.reply_text("✅ تم إرسال الرد.")
-            application.remove_handler(reply_msg)
-
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply_msg))
+# ------ معالجة الرسائل أثناء حالة الرد ------
+async def process_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if "reply_to" not in context.user_data:
+        return
+    target_user_id = context.user_data.pop("reply_to")
+    await application.bot.send_message(target_user_id, f"📩 رد من الإدارة:\n{update.message.text}")
+    await update.message.reply_text("✅ تم إرسال الرد.")
 
 # ------ إضافة Handlers ------
 application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_complaint))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_reply))
 application.add_handler(CallbackQueryHandler(handle_buttons))
 
 # ------ تشغيل Webhook في Thread منفصل ------

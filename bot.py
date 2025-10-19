@@ -66,6 +66,9 @@ def unblock_user(user_id):
         del data[str(user_id)]
         save_blocked(data)
 
+# ------ قاموس حالة الرد لكل مشرف ------
+reply_context = {}  # { admin_id: target_user_id }
+
 # ------ إنشاء تطبيق البوت ------
 application = Application.builder().token(BOT_TOKEN).build()
 
@@ -121,6 +124,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     action, target_user_id = query.data.split(":")
     target_user_id = int(target_user_id)
+    admin_id = query.from_user.id
 
     if action == "accept":
         await application.bot.send_message(target_user_id, "✅ تم قبول شكواك. شكرًا لتعاونك!")
@@ -141,17 +145,22 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_text(query.message.text + "\n\n🔓 تم رفع الإيقاف")
 
     elif action == "reply":
-        # حفظ حالة الرد في user_data
-        context.user_data["reply_to"] = target_user_id
+        # حفظ حالة الرد للمشرف
+        reply_context[admin_id] = target_user_id
         await query.message.reply_text("💬 أرسل الرد الآن ليتم توجيهه للعضو:")
 
-# ------ معالجة الرسائل أثناء حالة الرد ------
+# ------ معالجة الردود لكل مشرف ------
 async def process_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if "reply_to" not in context.user_data:
-        return
-    target_user_id = context.user_data.pop("reply_to")
-    await application.bot.send_message(target_user_id, f"📩 رد من الإدارة:\n{update.message.text}")
-    await update.message.reply_text("✅ تم إرسال الرد.")
+    admin_id = update.message.from_user.id
+    if admin_id not in reply_context:
+        return  # لا يوجد رد قيد الانتظار لهذا المشرف
+    target_user_id = reply_context.pop(admin_id)  # أخذ الـ ID ثم حذف الحالة
+
+    await application.bot.send_message(
+        target_user_id,
+        f"📩 رد من الإدارة:\n{update.message.text}"
+    )
+    await update.message.reply_text("✅ تم إرسال الرد بنجاح.")
 
 # ------ إضافة Handlers ------
 application.add_handler(CommandHandler("start", start))

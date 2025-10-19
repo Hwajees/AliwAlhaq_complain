@@ -70,7 +70,6 @@ def unblock_user(user_id):
 application = Application.builder().token(BOT_TOKEN).build()
 
 # ------ قاموس لتخزين الردود المؤقتة لكل مشرف ------
-reply_handlers = {}   # admin_id -> handler_object
 reply_targets = {}    # admin_id -> target_user_id
 
 # ------ Handlers المستخدم ------
@@ -81,15 +80,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text("👋 مرحبًا! أرسل شكواك أو اقتراحك هنا.")
 
-async def handle_complaint(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
-
-    # ❌ استثناء المشرفين الذين ينتظرون الرد
-    if user.id in reply_targets:
-        return  # الرسالة ستذهب لـ handle_reply_message فقط
-
     text = update.message.text.strip()
 
+    # إذا كان المرسل مشرف ينتظر الرد
+    if user.id in reply_targets:
+        target_user_id = reply_targets[user.id]
+        await context.bot.send_message(
+            chat_id=target_user_id,
+            text=f"📩 رد من الإدارة:\n{text}"
+        )
+        await update.message.reply_text("✅ تم إرسال الرد بنجاح.")
+        # إزالة المشرف من القاموس بعد الإرسال
+        del reply_targets[user.id]
+        return
+
+    # إذا كان العضو عادي
     if is_blocked(user.id):
         await update.message.reply_text("⏸️ لا يمكنك إرسال شكاوى حاليًا. انتظر انتهاء مدة الإيقاف.")
         return
@@ -114,7 +121,7 @@ async def handle_complaint(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     ])
 
-    await application.bot.send_message(
+    await context.bot.send_message(
         chat_id=ADMIN_GROUP_ID,
         text=complaint_msg,
         parse_mode="Markdown",
@@ -133,66 +140,32 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_id = query.from_user.id
 
     if action == "accept":
-        await application.bot.send_message(target_user_id, "✅ تم قبول شكواك. شكرًا لتعاونك!")
+        await context.bot.send_message(target_user_id, "✅ تم قبول شكواك. شكرًا لتعاونك!")
         await query.message.edit_text(query.message.text + "\n\n📢 تم القبول ✅")
 
     elif action == "reject":
-        await application.bot.send_message(target_user_id, "❌ تم رفض الشكوى بعد المراجعة.")
+        await context.bot.send_message(target_user_id, "❌ تم رفض الشكوى بعد المراجعة.")
         await query.message.edit_text(query.message.text + "\n\n📢 تم الرفض ❌")
 
     elif action == "block":
         block_user(target_user_id)
-        await application.bot.send_message(target_user_id, "🚫 تم إيقافك من إرسال الشكاوى لمدة 7 أيام.")
+        await context.bot.send_message(target_user_id, "🚫 تم إيقافك من إرسال الشكاوى لمدة 7 أيام.")
         await query.message.edit_text(query.message.text + "\n\n⏸️ العضو موقوف 7 أيام")
 
     elif action == "unblock":
         unblock_user(target_user_id)
-        await application.bot.send_message(target_user_id, "✅ تم رفع الإيقاف عنك ويمكنك الآن إرسال الشكاوى مجددًا.")
+        await context.bot.send_message(target_user_id, "✅ تم رفع الإيقاف عنك ويمكنك الآن إرسال الشكاوى مجددًا.")
         await query.message.edit_text(query.message.text + "\n\n🔓 تم رفع الإيقاف")
 
     elif action == "reply":
-        # إزالة أي handler قديم لهذا المشرف
-        if admin_id in reply_handlers:
-            context.application.remove_handler(reply_handlers[admin_id])
-            reply_handlers.pop(admin_id)
-            reply_targets.pop(admin_id)
-
-        # تسجيل الهدف للرد
+        # سجل العضو الذي سيرد المشرف له
         reply_targets[admin_id] = target_user_id
-
-        async def handle_reply_message(update2: Update, context2: ContextTypes.DEFAULT_TYPE):
-            # تحقق داخلي بدل استخدام filters.User
-            if update2.message.from_user.id != admin_id:
-                return
-            if update2.message.chat.type != "private":
-                return
-
-            user_id_to_reply = reply_targets.get(admin_id)
-            if not user_id_to_reply:
-                await update2.message.reply_text("❌ خطأ: لا يوجد عضو محدد للرد.")
-                return
-
-            await context2.bot.send_message(
-                chat_id=user_id_to_reply,
-                text=f"📩 رد من الإدارة:\n{update2.message.text}"
-            )
-
-            await update2.message.reply_text("✅ تم إرسال الرد بنجاح.")
-
-            # إزالة الـ Handler بعد الاستخدام
-            context2.application.remove_handler(reply_handlers[admin_id])
-            reply_handlers.pop(admin_id)
-            reply_targets.pop(admin_id)
-
-        handler = MessageHandler(filters.TEXT, handle_reply_message)
-        context.application.add_handler(handler)
-        reply_handlers[admin_id] = handler
-
         await query.message.reply_text("💬 أرسل الرد الآن في الخاص ليتم توجيهه للعضو.")
 
 # ------ إضافة Handlers ------
 application.add_handler(CommandHandler("start", start))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_complaint))
+# كل الرسائل الخاصة تمر من هنا
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_private))
 application.add_handler(CallbackQueryHandler(handle_buttons))
 
 # ------ تشغيل Webhook في Thread منفصل ------

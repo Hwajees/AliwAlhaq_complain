@@ -19,9 +19,9 @@ app = Flask(__name__)
 
 # ------ متغيرات البيئة ------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-MAIN_GROUP_ID = int(os.getenv("MAIN_GROUP_ID"))       # المجموعة العامة
-ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))     # مجموعة الإدارة
-ADMIN_GROUP_TOPIC_ID = int(os.getenv("ADMIN_GROUP_TOPIC_ID", "0"))  # Topic داخل مجموعة الإدارة
+MAIN_GROUP_ID = int(os.getenv("MAIN_GROUP_ID"))
+ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))
+ADMIN_GROUP_TOPIC_ID = int(os.getenv("ADMIN_GROUP_TOPIC_ID", "0"))
 PORT = int(os.getenv("PORT", "10000"))
 WEBHOOK_PATH = f"/{BOT_TOKEN}"
 WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
@@ -65,9 +65,6 @@ def unblock_user(user_id):
     if str(user_id) in data:
         del data[str(user_id)]
         save_blocked(data)
-
-# ------ قاموس حالة الرد لكل مشرف ------
-reply_context = {}  # { admin_id: target_user_id }
 
 # ------ إنشاء تطبيق البوت ------
 application = Application.builder().token(BOT_TOKEN).build()
@@ -118,7 +115,10 @@ async def handle_complaint(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("✅ تم إرسال شكواك إلى الإدارة. سيتم التواصل معك عند الرد.")
 
-# ------ أزرار الإدارة ------
+# ------ زر الرد المؤقت ------
+# سيتم إضافة Handler مؤقت لكل مشرف عند الضغط على زر الرد
+reply_handlers = {}  # {admin_id: handler_object}
+
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -145,27 +145,31 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_text(query.message.text + "\n\n🔓 تم رفع الإيقاف")
 
     elif action == "reply":
-        # حفظ حالة الرد للمشرف
-        reply_context[admin_id] = target_user_id
+        # إزالة أي handler قديم لهذا المشرف
+        if admin_id in reply_handlers:
+            context.application.remove_handler(reply_handlers[admin_id])
+            reply_handlers.pop(admin_id)
+
+        # تعريف Handler مؤقت للرسالة القادمة من هذا المشرف فقط
+        async def handle_reply_message(update2: Update, context2: ContextTypes.DEFAULT_TYPE):
+            await application.bot.send_message(
+                target_user_id,
+                f"📩 رد من الإدارة:\n{update2.message.text}"
+            )
+            await update2.message.reply_text("✅ تم إرسال الرد بنجاح.")
+            # إزالة handler بعد التنفيذ
+            context2.application.remove_handler(reply_handlers[admin_id])
+            reply_handlers.pop(admin_id)
+
+        handler = MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reply_message)
+        context.application.add_handler(handler)
+        reply_handlers[admin_id] = handler
+
         await query.message.reply_text("💬 أرسل الرد الآن ليتم توجيهه للعضو:")
-
-# ------ معالجة الردود لكل مشرف ------
-async def process_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    admin_id = update.message.from_user.id
-    if admin_id not in reply_context:
-        return  # لا يوجد رد قيد الانتظار لهذا المشرف
-    target_user_id = reply_context.pop(admin_id)  # أخذ الـ ID ثم حذف الحالة
-
-    await application.bot.send_message(
-        target_user_id,
-        f"📩 رد من الإدارة:\n{update.message.text}"
-    )
-    await update.message.reply_text("✅ تم إرسال الرد بنجاح.")
 
 # ------ إضافة Handlers ------
 application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_complaint))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_reply))
 application.add_handler(CallbackQueryHandler(handle_buttons))
 
 # ------ تشغيل Webhook في Thread منفصل ------

@@ -84,7 +84,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_complaint(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
 
-    # ✅ استثناء المشرفين الذين ينتظرون الرد
+    # ❌ استثناء المشرفين الذين ينتظرون الرد
     if user.id in reply_targets:
         return  # الرسالة ستذهب لـ handle_reply_message فقط
 
@@ -161,6 +161,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_targets[admin_id] = target_user_id
 
         async def handle_reply_message(update2: Update, context2: ContextTypes.DEFAULT_TYPE):
+            # تحقق داخلي بدل استخدام filters.User
             if update2.message.from_user.id != admin_id:
                 return
             if update2.message.chat.type != "private":
@@ -171,18 +172,19 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update2.message.reply_text("❌ خطأ: لا يوجد عضو محدد للرد.")
                 return
 
-            await context2.bot.send_message(user_id_to_reply, f"📩 رد من الإدارة:\n{update2.message.text}")
+            await context2.bot.send_message(
+                chat_id=user_id_to_reply,
+                text=f"📩 رد من الإدارة:\n{update2.message.text}"
+            )
+
             await update2.message.reply_text("✅ تم إرسال الرد بنجاح.")
 
-            # إزالة Handler بعد التنفيذ
+            # إزالة الـ Handler بعد الاستخدام
             context2.application.remove_handler(reply_handlers[admin_id])
             reply_handlers.pop(admin_id)
             reply_targets.pop(admin_id)
 
-        handler = MessageHandler(
-            filters.User(admin_id) & filters.ChatType.PRIVATE & filters.TEXT,
-            handle_reply_message
-        )
+        handler = MessageHandler(filters.TEXT, handle_reply_message)
         context.application.add_handler(handler)
         reply_handlers[admin_id] = handler
 

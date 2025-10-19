@@ -69,7 +69,7 @@ def unblock_user(user_id):
 # ------ إنشاء تطبيق البوت ------
 application = Application.builder().token(BOT_TOKEN).build()
 
-# ------ أوامر المستخدم ------
+# ------ Handlers المستخدم ------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     if is_blocked(user_id):
@@ -115,8 +115,7 @@ async def handle_complaint(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("✅ تم إرسال شكواك إلى الإدارة. سيتم التواصل معك عند الرد.")
 
-# ------ زر الرد المؤقت ------
-# سيتم إضافة Handler مؤقت لكل مشرف عند الضغط على زر الرد
+# ------ زر الرد المؤقت لكل مشرف ------
 reply_handlers = {}  # {admin_id: handler_object}
 
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -150,22 +149,23 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.application.remove_handler(reply_handlers[admin_id])
             reply_handlers.pop(admin_id)
 
-        # تعريف Handler مؤقت للرسالة القادمة من هذا المشرف فقط
         async def handle_reply_message(update2: Update, context2: ContextTypes.DEFAULT_TYPE):
-            await application.bot.send_message(
-                target_user_id,
-                f"📩 رد من الإدارة:\n{update2.message.text}"
-            )
+            # فقط الرسائل من المشرف نفسه وفي الخاص للبوت
+            if update2.message.from_user.id != admin_id:
+                return
+            if update2.message.chat.type != "private":
+                return
+            await context2.bot.send_message(target_user_id, f"📩 رد من الإدارة:\n{update2.message.text}")
             await update2.message.reply_text("✅ تم إرسال الرد بنجاح.")
-            # إزالة handler بعد التنفيذ
+            # إزالة Handler بعد التنفيذ
             context2.application.remove_handler(reply_handlers[admin_id])
             reply_handlers.pop(admin_id)
 
-        handler = MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reply_message)
+        handler = MessageHandler(filters.USER(admin_id) & filters.PRIVATE & filters.TEXT, handle_reply_message)
         context.application.add_handler(handler)
         reply_handlers[admin_id] = handler
 
-        await query.message.reply_text("💬 أرسل الرد الآن ليتم توجيهه للعضو:")
+        await query.message.reply_text("💬 أرسل الرد الآن في الخاص ليتم توجيهه للعضو.")
 
 # ------ إضافة Handlers ------
 application.add_handler(CommandHandler("start", start))

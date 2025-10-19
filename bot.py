@@ -69,6 +69,10 @@ def unblock_user(user_id):
 # ------ إنشاء تطبيق البوت ------
 application = Application.builder().token(BOT_TOKEN).build()
 
+# ------ قاموس لتخزين الردود المؤقتة لكل مشرف ------
+reply_handlers = {}   # admin_id -> handler_object
+reply_targets = {}    # admin_id -> target_user_id
+
 # ------ Handlers المستخدم ------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -115,9 +119,7 @@ async def handle_complaint(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("✅ تم إرسال شكواك إلى الإدارة. سيتم التواصل معك عند الرد.")
 
-# ------ زر الرد المؤقت لكل مشرف ------
-reply_handlers = {}  # {admin_id: handler_object}
-
+# ------ Handler أزرار الإدارة ------
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -148,20 +150,31 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if admin_id in reply_handlers:
             context.application.remove_handler(reply_handlers[admin_id])
             reply_handlers.pop(admin_id)
+            reply_targets.pop(admin_id)
+
+        # تسجيل الهدف للرد
+        reply_targets[admin_id] = target_user_id
 
         async def handle_reply_message(update2: Update, context2: ContextTypes.DEFAULT_TYPE):
-            # فقط الرسائل من المشرف نفسه وفي الخاص للبوت
             if update2.message.from_user.id != admin_id:
                 return
             if update2.message.chat.type != "private":
                 return
-            await context2.bot.send_message(target_user_id, f"📩 رد من الإدارة:\n{update2.message.text}")
+
+            user_id_to_reply = reply_targets.get(admin_id)
+            if not user_id_to_reply:
+                await update2.message.reply_text("❌ خطأ: لا يوجد عضو محدد للرد.")
+                return
+
+            await context2.bot.send_message(user_id_to_reply, f"📩 رد من الإدارة:\n{update2.message.text}")
             await update2.message.reply_text("✅ تم إرسال الرد بنجاح.")
+
             # إزالة Handler بعد التنفيذ
             context2.application.remove_handler(reply_handlers[admin_id])
             reply_handlers.pop(admin_id)
+            reply_targets.pop(admin_id)
 
-        # ✅ إصلاح زر الرد: استخدام ChatType.PRIVATE
+        # إضافة Handler جديد مع الفلاتر الصحيحة
         handler = MessageHandler(
             filters.User(admin_id) & filters.ChatType.PRIVATE & filters.TEXT,
             handle_reply_message

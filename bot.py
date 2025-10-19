@@ -33,7 +33,6 @@ if not BOT_TOKEN:
 # ملفات البيانات
 BLOCK_FILE = "blocked_users.json"
 DAILY_FILE = "daily_limit.json"
-REPLY_FILE = "reply_targets.json"
 MAX_CHARS = 200
 
 # دوال مساعدة
@@ -71,21 +70,7 @@ def can_send_today(uid):
     save_json(DAILY_FILE, data)
     return True
 
-def save_reply(admin_id, user_id):
-    data = load_json(REPLY_FILE)
-    data[str(admin_id)] = user_id
-    save_json(REPLY_FILE, data)
-
-def pop_reply(admin_id):
-    data = load_json(REPLY_FILE)
-    if str(admin_id) in data:
-        user_id = data[str(admin_id)]
-        del data[str(admin_id)]
-        save_json(REPLY_FILE, data)
-        return user_id
-    return None
-
-# إنشاء تطبيق البوت
+# إنشاء التطبيق
 application = Application.builder().token(BOT_TOKEN).build()
 
 # نصوص
@@ -118,24 +103,6 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     text = update.message.text.strip()
 
-    # إذا كان المشرف في وضع الرد
-    target_id = pop_reply(user.id)
-    if target_id:
-        try:
-            await context.bot.send_message(
-                chat_id=target_id,
-                text=f"📩 رد من الإدارة:\n\n{text}"
-            )
-            await update.message.reply_text("✅ تم إرسال الرد بنجاح إلى العضو.")
-            logger.info(f"📨 رد من المشرف {user.id} إلى العضو {target_id}")
-        except Exception as e:
-            logger.error(f"❌ فشل إرسال الرد إلى العضو {target_id}: {e}")
-            await update.message.reply_text(
-                "⚠️ لم أتمكن من إرسال الرد.\n"
-                "قد يكون العضو غادر أو فعّل إعدادات تمنع الرسائل من البوت."
-            )
-        return
-
     # عضو عادي يرسل شكوى
     if is_blocked(user.id):
         await update.message.reply_text("🚫 تم إيقافك مؤقتًا من إرسال الشكاوى.")
@@ -161,7 +128,6 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("❌ رفض", callback_data=f"reject:{user.id}")
         ],
         [
-            InlineKeyboardButton("💬 رد", callback_data=f"reply:{user.id}"),
             InlineKeyboardButton("⏸️ إيقاف 7 أيام", callback_data=f"block:{user.id}")
         ]
     ])
@@ -182,7 +148,6 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     action, uid = query.data.split(":")
     uid = int(uid)
-    admin_id = query.from_user.id
 
     if action == "accept":
         await context.bot.send_message(uid, accept_text)
@@ -194,12 +159,6 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         block_user(uid)
         await context.bot.send_message(uid, "🚫 تم إيقافك من إرسال الشكاوى لمدة 7 أيام.")
         await query.message.edit_text(query.message.text + "\n\n⏸️ العضو موقوف 7 أيام", reply_markup=None)
-    elif action == "reply":
-        save_reply(admin_id, uid)
-        await query.message.edit_text(
-            query.message.text + "\n\n💬 أرسل الرد الآن في الخاص ليتم توجيهه للعضو.",
-            reply_markup=None
-        )
 
 # Handlers
 application.add_handler(CommandHandler("start", start))

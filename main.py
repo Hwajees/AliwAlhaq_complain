@@ -1,213 +1,173 @@
-# bot.py
 import os
-import threading
 import json
 from datetime import datetime, timedelta
-from pathlib import Path
-
-from flask import Flask
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils import executor
+from aiogram.filters import Command
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiohttp import web
 
-# ---------- إعداد المتغيرات البيئية ----------
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # ضع التوكن في إعدادات Render
-MAIN_GROUP_ID = int(os.getenv("MAIN_GROUP_ID", "0"))      # مثال: -4949122709
-ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", "0"))    # مثال: -1003131818226
-ADMIN_THREAD_ID = os.getenv("ADMIN_THREAD_ID")            # مثال: "2"
-if ADMIN_THREAD_ID:
-    try:
-        ADMIN_THREAD_ID = int(ADMIN_THREAD_ID)
-    except:
-        ADMIN_THREAD_ID = None
+# ------------------------
+# المتغيرات من بيئة Render
+# ------------------------
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+MAIN_GROUP_ID = int(os.getenv("Main_Group_ID"))
+ADMIN_GROUP_ID = int(os.getenv("Admin_Group_ID"))
+ADMIN_TOPIC_ID = int(os.getenv("Admin_Group_topic_ID", "2"))  # يمكن تعديله لاحقاً
 
-# مسار الحفظ الدائم (إن كنت استخدمت Persistent Disk في Render غيّر القيمة إلى mount path)
-PERSISTENT_PATH = os.getenv("PERSISTENT_PATH", "/data")
-SUSPENSIONS_FILE = os.path.join(PERSISTENT_PATH, "suspensions.json")
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
 
-# ---------- تهيئة بوت aiogram ----------
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
-dp = Dispatcher(bot)
+BLOCK_FILE = "blocked.json"
 
-# ---------- إعداد ملف الإيقافات ----------
-Path(PERSISTENT_PATH).mkdir(parents=True, exist_ok=True)
-if not os.path.exists(SUSPENSIONS_FILE):
-    with open(SUSPENSIONS_FILE, "w", encoding="utf-8") as f:
-        json.dump({}, f)
+# ------------------------
+# إدارة ملف الموقوفين
+# ------------------------
+def load_blocked():
+    if os.path.exists(BLOCK_FILE):
+        with open(BLOCK_FILE, "r") as f:
+            return json.load(f)
+    return {}
 
-def load_suspensions():
-    with open(SUSPENSIONS_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+def save_blocked(data):
+    with open(BLOCK_FILE, "w") as f:
+        json.dump(data, f)
 
-def save_suspensions(data):
-    with open(SUSPENSIONS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+blocked_users = load_blocked()
 
-def is_suspended(user_id):
-    data = load_suspensions()
-    s = data.get(str(user_id))
-    if not s:
-        return False
-    expiry = datetime.fromisoformat(s["until"])
-    if datetime.utcnow() >= expiry:
-        data.pop(str(user_id), None)
-        save_suspensions(data)
-        return False
-    return True
-
-def suspend_user(user_id, days=7, by_admin=None):
-    data = load_suspensions()
-    until = datetime.utcnow() + timedelta(days=days)
-    data[str(user_id)] = {"until": until.isoformat(), "by": by_admin, "reason": "spam"}
-    save_suspensions(data)
-
-def lift_suspension(user_id):
-    data = load_suspensions()
-    if str(user_id) in data:
-        data.pop(str(user_id), None)
-        save_suspensions(data)
-        return True
+def is_blocked(user_id):
+    now = datetime.now()
+    if str(user_id) in blocked_users:
+        until = datetime.fromisoformat(blocked_users[str(user_id)])
+        if now < until:
+            return True
+        else:
+            del blocked_users[str(user_id)]
+            save_blocked(blocked_users)
     return False
 
-# ---------- أزرار الإدارة ----------
-def admin_buttons(user_id):
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("✅ قبول", callback_data=f"accept:{user_id}"),
-        InlineKeyboardButton("❌ رفض", callback_data=f"reject:{user_id}")
-    )
-    kb.add(
-        InlineKeyboardButton("💬 رد للعضو", callback_data=f"reply:{user_id}"),
-        InlineKeyboardButton("⏸️ إيقاف 7 أيام", callback_data=f"suspend:{user_id}")
-    )
-    kb.add(InlineKeyboardButton("🔓 رفع الإيقاف", callback_data=f"lift:{user_id}"))
-    return kb
+# ------------------------
+# الأوامر الأساسية
+# ------------------------
+@dp.message(Command("start"))
+async def start(message: types.Message):
+    member = await bot.get_chat_member(MAIN_GROUP_ID, message.from_user.id)
+    if member.status not in ["member", "administrator", "creator"]:
+        await message.answer("🚫 يجب أن تكون عضوًا في المجموعة العامة لاستخدام هذا البوت.")
+        return
 
-# ---------- handlers ----------
-@dp.message_handler(commands=["start"])
-async def cmd_start(message: types.Message):
+    if is_blocked(message.from_user.id):
+        await message.answer("🚫 تم إيقافك مؤقتًا من إرسال الشكاوى لمدة 7 أيام.")
+        return
+
+    await message.answer("👋 مرحبًا! أرسل الآن شكواك أو اقتراحك:")
+
+@dp.message()
+async def handle_complaint(message: types.Message):
+    if message.chat.type != "private":
+        return
+
+    if is_blocked(message.from_user.id):
+        await message.answer("🚫 تم إيقافك مؤقتًا من إرسال الشكاوى لمدة 7 أيام.")
+        return
+
+    member = await bot.get_chat_member(MAIN_GROUP_ID, message.from_user.id)
+    if member.status not in ["member", "administrator", "creator"]:
+        await message.answer("🚫 يجب أن تكون عضوًا في المجموعة العامة لاستخدام هذا البوت.")
+        return
+
     user = message.from_user
-    # تحقق من العضوية في المجموعة العامة
-    try:
-        member = await bot.get_chat_member(chat_id=MAIN_GROUP_ID, user_id=user.id)
-        if member.status not in ("creator", "administrator", "member"):
-            await message.answer("🚫 عذرًا، يجب أن تكون عضوًا في المجموعة العامة لاستخدام هذا البوت.")
-            return
-    except Exception:
-        await message.answer("❗ حدث خطأ أثناء التحقق من عضويتك. تأكد أنك عضوًا بالمجموعة.")
-        return
+    text = (
+        f"📬 **شكوى/اقتراح جديد**\n"
+        f"👤 الاسم: {user.full_name}\n"
+        f"🆔 ID: `{user.id}`\n"
+        f"🗣️ المستخدم: @{user.username if user.username else '—'}\n"
+        f"🕓 الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        f"📝 **النص:**\n{message.text}"
+    )
 
-    if is_suspended(user.id):
-        data = load_suspensions()
-        until = data.get(str(user.id))["until"]
-        await message.answer(f"🚫 تم ايقافك عن إرسال شكاوى حتى {until} (UTC).")
-        return
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ قبول", callback_data=f"accept_{user.id}"),
+            InlineKeyboardButton(text="❌ رفض", callback_data=f"reject_{user.id}")
+        ],
+        [
+            InlineKeyboardButton(text="💬 رد", callback_data=f"reply_{user.id}"),
+            InlineKeyboardButton(text="⏸️ إيقاف 7 أيام", callback_data=f"block_{user.id}"),
+            InlineKeyboardButton(text="🔓 رفع الإيقاف", callback_data=f"unblock_{user.id}")
+        ]
+    ])
 
-    await message.answer("مرحبًا 👋\nأرسل الآن نص الشكوى أو الاقتراح.")
+    await bot.send_message(
+        chat_id=ADMIN_GROUP_ID,
+        text=text,
+        parse_mode="Markdown",
+        reply_markup=keyboard,
+        message_thread_id=ADMIN_TOPIC_ID
+    )
 
-    # Simple one-time listener: next message from this user taken as complaint
-    @dp.message_handler(lambda m: m.from_user.id == user.id, content_types=types.ContentTypes.TEXT, state=None)
-    async def receive_complaint(m: types.Message):
-        text = m.text.strip()
-        if not text:
-            await m.answer("✍️ الرجاء كتابة نص الشكوى أو الاقتراح.")
-            return
+    await message.answer("✅ تم إرسال شكواك للإدارة، شكرًا لتواصلك.")
 
-        info = (
-            f"📬 <b>شكوى / اقتراح جديد</b>\n\n"
-            f"👤 الاسم: {user.full_name}\n"
-            f"🆔 ID: <code>{user.id}</code>\n"
-            f"🗣️ المعرف: @{user.username if user.username else 'لا يوجد'}\n"
-            f"🕓 الوقت (UTC): {datetime.utcnow().isoformat(sep=' ', timespec='seconds')}\n\n"
-            f"✉️ النص:\n{text}"
-        )
-        try:
-            await bot.send_message(
-                chat_id=ADMIN_GROUP_ID,
-                text=info,
-                reply_markup=admin_buttons(user.id),
-                message_thread_id=ADMIN_THREAD_ID if ADMIN_THREAD_ID else None
-            )
-            await m.answer("✅ تم إرسال شكواك للإدارة. شكرًا لك.")
-        except Exception:
-            await m.answer("❗ حدث خطأ أثناء إرسال الشكوى للإدارة. حاول لاحقًا.")
-        dp.message_handlers.unregister(receive_complaint)
-
-@dp.callback_query_handler(lambda c: c.data and c.data.split(":")[0] in ("accept","reject","reply","suspend","lift"))
-async def admin_action(cb: types.CallbackQuery):
-    action, user_id_str = cb.data.split(":")
-    user_id = int(user_id_str)
-    admin = cb.from_user
+# ------------------------
+# ردود الإدارة على الأزرار
+# ------------------------
+@dp.callback_query()
+async def handle_callback(callback: types.CallbackQuery):
+    data = callback.data.split("_")
+    action = data[0]
+    user_id = int(data[1])
 
     if action == "accept":
-        await cb.message.edit_reply_markup(reply_markup=None)
-        await cb.answer("✅ تم قبول الشكوى.")
-        try:
-            await bot.send_message(user_id, "✅ تم قبول شكواك، سيتم اتخاذ الإجراء اللازم. شكراً لتعاونك.")
-        except:
-            await cb.answer("⚠️ لم أتمكن من إرسال رسالة خاصة للعضو.", show_alert=True)
+        await bot.send_message(user_id, "✅ تم قبول شكواك، سيتم اتخاذ الإجراء اللازم.")
+        await callback.message.edit_text(callback.message.text + "\n\n✅ تم قبول الشكوى.")
 
     elif action == "reject":
-        await cb.message.edit_reply_markup(reply_markup=None)
-        await cb.answer("❌ تم رفض الشكوى.")
-        try:
-            await bot.send_message(user_id, "❌ تم رفض شكواك بعد المراجعة.")
-        except:
-            await cb.answer("⚠️ لم أتمكن من إرسال رسالة خاصة للعضو.", show_alert=True)
+        await bot.send_message(user_id, "❌ تم رفض الشكوى بعد المراجعة.")
+        await callback.message.edit_text(callback.message.text + "\n\n❌ تم رفض الشكوى.")
 
     elif action == "reply":
-        await cb.answer("اكتب ردّك هنا — سأرسله للعضو عندما تكتبه.")
-        if not hasattr(bot, "pending_replies"):
-            bot.pending_replies = {}
-        bot.pending_replies[admin.id] = user_id
+        await callback.message.reply("💬 أرسل الرد الذي تريد إرساله للعضو:")
 
-    elif action == "suspend":
-        suspend_user(user_id, days=7, by_admin=admin.id)
-        await cb.answer("⏸️ تم إيقاف استلام الشكاوى من هذا العضو لمدة 7 أيام.")
-        try:
-            await bot.send_message(user_id, "🚫 تم إيقافك مؤقتًا عن إرسال شكاوى لمدة 7 أيام بواسطة الإدارة.")
-        except:
-            pass
-        await cb.message.edit_reply_markup(reply_markup=None)
+        @dp.message()
+        async def get_reply(message: types.Message):
+            await bot.send_message(user_id, f"📩 رد من الإدارة:\n{message.text}")
+            await message.answer("✅ تم إرسال الرد.")
+            dp.message.handlers.unregister(get_reply)
 
-    elif action == "lift":
-        ok = lift_suspension(user_id)
-        if ok:
-            await cb.answer("🔓 تم رفع الإيقاف عن هذا العضو.")
-            try:
-                await bot.send_message(user_id, "🔓 تم رفع الإيقاف عنك، يمكنك الآن إرسال الشكاوى مجددًا.")
-            except:
-                pass
-            await cb.message.edit_reply_markup(reply_markup=None)
+    elif action == "block":
+        until = datetime.now() + timedelta(days=7)
+        blocked_users[str(user_id)] = until.isoformat()
+        save_blocked(blocked_users)
+        await bot.send_message(user_id, "🚫 تم إيقافك عن إرسال الشكاوى لمدة 7 أيام.")
+        await callback.message.reply("⏸️ تم إيقاف العضو 7 أيام.")
+
+    elif action == "unblock":
+        if str(user_id) in blocked_users:
+            del blocked_users[str(user_id)]
+            save_blocked(blocked_users)
+            await bot.send_message(user_id, "✅ تم رفع الإيقاف عنك، يمكنك إرسال شكوى مجددًا.")
+            await callback.message.reply("🔓 تم رفع الإيقاف عن العضو.")
         else:
-            await cb.answer("ℹ️ العضو ليس موقوفًا أصلاً.", show_alert=True)
+            await callback.message.reply("ℹ️ العضو غير موقوف حاليًا.")
 
-@dp.message_handler(lambda m: hasattr(bot, "pending_replies") and m.from_user.id in getattr(bot, "pending_replies", {}), content_types=types.ContentTypes.TEXT)
-async def handle_admin_reply(m: types.Message):
-    admin = m.from_user
-    target_user_id = bot.pending_replies.pop(admin.id)
-    text = m.text.strip()
-    try:
-        await bot.send_message(target_user_id, f"💬 رد من الإدارة:\n\n{text}")
-        await m.answer("✅ تم إرسال ردّك للعضو.")
-    except:
-        await m.answer("⚠️ فشل إرسال الرد للعضو — ربما خاصية الرسائل مغلقة لدى العضو.")
+    await callback.answer()
 
-# ---------- تشغيل polling في ثريد منفصل ----------
-def start_polling():
-    executor.start_polling(dp, skip_updates=True)
+# ------------------------
+# إعداد webhook لـ Render
+# ------------------------
+async def handle_webhook(request):
+    update = await request.json()
+    await dp.feed_webhook_update(bot, update)
+    return web.Response()
 
-# ---------- Flask app بسيط للـ Web Service ----------
-app = Flask(__name__)
+app = web.Application()
+app.router.add_post(f"/{BOT_TOKEN}", handle_webhook)
 
-@app.route("/")
-def index():
-    return "Bot is running."
+async def on_startup(app):
+    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{BOT_TOKEN}"
+    await bot.set_webhook(webhook_url)
 
-# عند تشغيل التطبيق بواسطة gunicorn/Render نشغّل polling داخل ثريد مرة واحدة
-def run_background_tasks():
-    t = threading.Thread(target=start_polling, daemon=True)
-    t.start()
+app.on_startup.append(on_startup)
 
-# تشغّل عند الاستيراد (gunicorn سيستدعي الملف)
-run_background_tasks()
+if __name__ == "__main__":
+    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))

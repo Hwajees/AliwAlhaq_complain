@@ -30,7 +30,7 @@ WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
 if not BOT_TOKEN:
     raise RuntimeError("❌ BOT_TOKEN غير موجود في متغيرات البيئة.")
 
-# ------ ملف الموقوفين ------
+# ------ ملفات الحظر والحد اليومي ------
 BLOCK_FILE = "blocked_users.json"
 DAILY_FILE = "daily_users.json"
 MAX_CHAR = 200  # حد الأحرف للعضو والمشرف
@@ -76,23 +76,31 @@ application = Application.builder().token(BOT_TOKEN).build()
 # ------ قاموس لتخزين الردود المؤقتة لكل مشرف ------
 reply_targets = {}  # admin_id -> target_user_id
 
-# ------ Handlers المستخدم ------
+# ------ دالة /start ------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != "private":
+        return  # تجاهل أي استخدام للأمر داخل المجموعات
+
     user_id = update.message.from_user.id
     if is_blocked(user_id):
         await update.message.reply_text("⏸️ تم إيقافك مؤقتًا من إرسال الشكاوى لمدة 7 أيام.")
         return
+
     msg = (
-        "👋 مرحبًا! هذا البوت مخصص لاستقبال شكاوى ومقترحات أعضاء "
-        "غرفة علي مع الحق والحق مع علي.\n\n"
-        f"📌 يمكنك إرسال رسالة واحدة يوميًا.\n"
-        f"✍️ الحد الأقصى للأحرف: {MAX_CHAR}\n"
-        "📝 سيتم عرض شكواك أو اقتراحك لإدارة الغرفة في موضوع الشكاوي والمقترحات.\n\n"
+        "👋 مرحبًا بك!\n\n"
+        "📮 هذا البوت مخصص لاستقبال **الشكاوى والمقترحات** من أعضاء غرفة *علي مع الحق والحق مع علي*.\n\n"
+        f"📝 يمكنك إرسال **رسالة واحدة يوميًا** بحد أقصى **{MAX_CHAR} حرفًا**.\n"
+        "📂 سيتم عرض رسالتك في *موضوع الشكاوى والمقترحات* داخل مجموعة الإدارة.\n\n"
         "🔗 لمتابعة الغرفة الرئيسية: @AliwAlhaq"
     )
-    await update.message.reply_text(msg)
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
+# ------ معالجة الرسائل الخاصة فقط ------
 async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # تجاهل أي رسالة من المجموعات
+    if update.effective_chat.type != "private":
+        return
+
     user = update.message.from_user
     text = update.message.text.strip()
 
@@ -100,7 +108,7 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ الحد الأقصى لعدد الأحرف هو {MAX_CHAR}.")
         return
 
-    # تحقق إذا هذا المشرف في وضع الرد
+    # تحقق إن كان هذا المشرف في وضع الرد
     if user.id in reply_targets:
         target_user_id = reply_targets[user.id]
         try:
@@ -115,9 +123,9 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del reply_targets[user.id]
         return
 
-    # إذا كان العضو عادي
+    # عضو عادي يرسل شكوى
     if is_blocked(user.id):
-        await update.message.reply_text("⏸️ لا يمكنك إرسال شكاوى حاليًا. انتظر انتهاء مدة الإيقاف.")
+        await update.message.reply_text("🚫 لا يمكنك إرسال شكاوى حاليًا. انتظر انتهاء مدة الإيقاف.")
         return
 
     if not can_send_today(user.id):
@@ -153,7 +161,7 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("✅ تم إرسال شكواك إلى الإدارة. سيتم التواصل معك عند الرد.")
 
-# ------ Handler أزرار الإدارة ------
+# ------ معالجة الأزرار ------
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -180,12 +188,11 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ------ إضافة Handlers ------
 application.add_handler(CommandHandler("start", start))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_private))
+application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, handle_private))
 application.add_handler(CallbackQueryHandler(handle_buttons))
 
-# ------ تشغيل Webhook في Thread منفصل ------
+# ------ تشغيل Webhook ------
 async_loop = None
-
 def run_async_loop():
     global async_loop
     async_loop = asyncio.new_event_loop()
@@ -203,7 +210,7 @@ def run_async_loop():
 
 threading.Thread(target=run_async_loop, daemon=True).start()
 
-# ------ مسار Webhook للـ Flask ------
+# ------ Flask Webhook Route ------
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def telegram_webhook():
     try:
@@ -220,7 +227,7 @@ def telegram_webhook():
         logger.exception(f"❌ خطأ في استلام webhook: {e}")
         return "Error", 500
 
-# ------ بدء Flask ------
+# ------ تشغيل Flask ------
 if __name__ == "__main__":
     logger.info("🚀 بدأ تشغيل Flask - الخادم سيستمع للطلبات")
     app.run(host="0.0.0.0", port=PORT)

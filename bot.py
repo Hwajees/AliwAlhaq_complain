@@ -8,18 +8,19 @@ from datetime import datetime, timedelta
 from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+    Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 )
 
-# إعداد السجلات
+# ------ إعداد السجلات ------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("complaint-bot")
 
-# إعداد Flask
+# ------ إعداد Flask ------
 app = Flask(__name__)
 
-# المتغيرات
+# ------ متغيرات البيئة ------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+MAIN_GROUP_ID = int(os.getenv("MAIN_GROUP_ID"))
 ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))
 ADMIN_GROUP_TOPIC_ID = int(os.getenv("ADMIN_GROUP_TOPIC_ID", "0"))
 PORT = int(os.getenv("PORT", "10000"))
@@ -29,79 +30,102 @@ WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
 if not BOT_TOKEN:
     raise RuntimeError("❌ BOT_TOKEN غير موجود في متغيرات البيئة.")
 
+# ------ ملفات البيانات ------
 BLOCK_FILE = "blocked_users.json"
-DAILY_FILE = "daily_users.json"
+DAILY_LIMIT_FILE = "daily_limit.json"
 REPLY_FILE = "reply_targets.json"
 MAX_CHARS = 200
 
-# دوال مساعدة
-def load_json(path):
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
+# ------ دوال المساعدة العامة ------
+def load_json(file_path):
+    if os.path.exists(file_path):
+        with open(file_path, "r") as f:
             return json.load(f)
     return {}
 
-def save_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
+def save_json(file_path, data):
+    with open(file_path, "w") as f:
+        json.dump(data, f)
 
-def is_blocked(uid):
+# ------ الإيقاف ------
+def is_blocked(user_id):
     data = load_json(BLOCK_FILE)
-    if str(uid) in data:
-        expire = datetime.fromisoformat(data[str(uid)])
+    if str(user_id) in data:
+        expire = datetime.fromisoformat(data[str(user_id)])
         if datetime.now() < expire:
             return True
-        del data[str(uid)]
-        save_json(BLOCK_FILE, data)
+        else:
+            del data[str(user_id)]
+            save_json(BLOCK_FILE, data)
     return False
 
-def block_user(uid, days=7):
+def block_user(user_id, days=7):
     data = load_json(BLOCK_FILE)
-    data[str(uid)] = (datetime.now() + timedelta(days=days)).isoformat()
+    data[str(user_id)] = (datetime.now() + timedelta(days=days)).isoformat()
     save_json(BLOCK_FILE, data)
 
-def can_send_today(uid):
-    data = load_json(DAILY_FILE)
+# ------ الحد اليومي ------
+def can_send_today(user_id):
+    data = load_json(DAILY_LIMIT_FILE)
     today = datetime.now().date().isoformat()
-    if data.get(str(uid)) == today:
+    if str(user_id) in data and data[str(user_id)] == today:
         return False
-    data[str(uid)] = today
-    save_json(DAILY_FILE, data)
     return True
 
-def save_reply(admin_id, user_id):
-    data = load_json(REPLY_FILE)
-    data[str(admin_id)] = user_id
-    save_json(REPLY_FILE, data)
+def mark_sent_today(user_id):
+    data = load_json(DAILY_LIMIT_FILE)
+    today = datetime.now().date().isoformat()
+    data[str(user_id)] = today
+    save_json(DAILY_LIMIT_FILE, data)
 
-def pop_reply(admin_id):
-    data = load_json(REPLY_FILE)
-    uid = data.pop(str(admin_id), None)
-    save_json(REPLY_FILE, data)
-    return uid
+# ------ الردود المؤقتة (ملف ثابت) ------
+def load_reply_targets():
+    if os.path.exists(REPLY_FILE):
+        with open(REPLY_FILE, "r") as f:
+            return json.load(f)
+    return {}
 
-# إنشاء التطبيق
+def save_reply_targets(data):
+    with open(REPLY_FILE, "w") as f:
+        json.dump(data, f)
+
+def set_reply_target(admin_id, target_user_id):
+    data = load_reply_targets()
+    data[str(admin_id)] = target_user_id
+    save_reply_targets(data)
+
+def pop_reply_target(admin_id):
+    data = load_reply_targets()
+    if str(admin_id) in data:
+        target = data[str(admin_id)]
+        del data[str(admin_id)]
+        save_reply_targets(data)
+        return target
+    return None
+
+# ------ إنشاء تطبيق البوت ------
 application = Application.builder().token(BOT_TOKEN).build()
 
-# الردود المؤقتة
+# ------ نصوص الرسائل ------
 welcome_text = (
     f"👋 مرحبًا بك في بوت الشكاوى والمقترحات!\n\n"
     f"📢 هذا البوت مخصص لاستقبال شكاوى ومقترحات أعضاء **غرفة علي مع الحق والحق مع علي**.\n"
+    f"📝 جميع الشكاوى والمقترحات سيتم عرضها مباشرة على إدارة الغرفة لمراجعتها.\n\n"
     f"💬 ملاحظات:\n"
-    f"- الحد اليومي: رسالة واحدة.\n"
-    f"- الحد الأقصى للأحرف: {MAX_CHARS}.\n\n"
-    f"🔗 [الانضمام إلى الغرفة](https://t.me/AliwAlhaq)"
+    f"- الحد اليومي لكل عضو: رسالة واحدة فقط.\n"
+    f"- الحد الأقصى للأحرف لكل رسالة: {MAX_CHARS} حرف.\n\n"
+    f"🔗 [الانتقال إلى الغرفة](https://t.me/AliwAlhaq)"
 )
 
-accept_text = "✅ تم قبول شكواك. شكرًا لتعاونك!"
+accept_text = "✅ تم قبول شكواك. شكرًا لتعاونك معنا!"
 reject_text = "❌ تم رفض الشكوى بعد المراجعة."
 
-# Handlers
+# ------ Handlers المستخدم ------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
         return
-    uid = update.message.from_user.id
-    if is_blocked(uid):
+    user_id = update.message.from_user.id
+    if is_blocked(user_id):
         await update.message.reply_text("⏸️ تم إيقافك مؤقتًا من إرسال الشكاوى لمدة 7 أيام.")
         return
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
@@ -113,35 +137,45 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     text = update.message.text.strip()
 
-    # لو المشرف في وضع الرد
-    target_id = pop_reply(user.id)
-    if target_id:
+    # تحقق من الرد من قبل المشرف
+    target_user_id = pop_reply_target(user.id)
+    if target_user_id:
         try:
-            await context.bot.send_message(target_id, f"📩 رد من الإدارة:\n\n{text}")
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=f"📩 رد من الإدارة:\n{text}"
+            )
             await update.message.reply_text("✅ تم إرسال الرد بنجاح إلى العضو.")
         except Exception as e:
-            if "Forbidden" in str(e):
-                await update.message.reply_text("⚠️ العضو لم يبدأ محادثة مع البوت.")
-            else:
-                await update.message.reply_text(f"⚠️ لم أستطع إرسال الرد: {e}")
+            await update.message.reply_text(f"⚠️ تعذر إرسال الرد: {e}")
         return
 
-    # عضو يرسل شكوى
-    if is_blocked(user.id):
-        await update.message.reply_text("🚫 تم إيقافك من إرسال الشكاوى مؤقتًا.")
-        return
+    # تحقق من الحد اليومي
     if not can_send_today(user.id):
         await update.message.reply_text("⚠️ يمكنك إرسال رسالة واحدة فقط يوميًا.")
         return
+
+    # تحقق من الحد الأقصى للأحرف
     if len(text) > MAX_CHARS:
-        await update.message.reply_text(f"⚠️ الحد الأقصى {MAX_CHARS} حرف.")
+        await update.message.reply_text(
+            f"⚠️ الحد الأقصى {MAX_CHARS} حرف. رسالتك تحتوي على {len(text)} حرف."
+        )
         return
 
-    complaint = (
+    # تحقق من الإيقاف
+    if is_blocked(user.id):
+        await update.message.reply_text("⏸️ لا يمكنك إرسال الشكاوى حاليًا.")
+        return
+
+    # سجل الإرسال اليومي
+    mark_sent_today(user.id)
+
+    # إرسال الشكوى للإدارة
+    complaint_msg = (
         f"📬 **شكوى جديدة**\n"
         f"👤 الاسم: {user.full_name}\n"
         f"🆔 ID: `{user.id}`\n"
-        f"🗣️ المستخدم: @{user.username or 'بدون'}\n"
+        f"🗣️ المستخدم: @{user.username if user.username else 'بدون'}\n"
         f"💬 **النص:** {text}"
     )
 
@@ -158,44 +192,48 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_message(
         chat_id=ADMIN_GROUP_ID,
-        text=complaint,
+        text=complaint_msg,
         parse_mode="Markdown",
         reply_markup=keyboard,
         message_thread_id=ADMIN_GROUP_TOPIC_ID if ADMIN_GROUP_TOPIC_ID != 0 else None
     )
 
-    await update.message.reply_text("✅ تم إرسال شكواك إلى الإدارة.")
+    await update.message.reply_text("✅ تم إرسال شكواك إلى الإدارة. سيتم التواصل معك عند الرد.")
 
+# ------ Handler أزرار الإدارة ------
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    action, user_id = query.data.split(":")
-    user_id = int(user_id)
+    action, target_user_id = query.data.split(":")
+    target_user_id = int(target_user_id)
     admin_id = query.from_user.id
 
     if action == "accept":
-        await context.bot.send_message(user_id, accept_text)
+        await context.bot.send_message(target_user_id, accept_text)
         await query.message.edit_text(query.message.text + "\n\n📢 تم القبول ✅", reply_markup=None)
 
     elif action == "reject":
-        await context.bot.send_message(user_id, reject_text)
+        await context.bot.send_message(target_user_id, reject_text)
         await query.message.edit_text(query.message.text + "\n\n📢 تم الرفض ❌", reply_markup=None)
 
     elif action == "block":
-        block_user(user_id)
-        await context.bot.send_message(user_id, "🚫 تم إيقافك من إرسال الشكاوى لمدة 7 أيام.")
+        block_user(target_user_id)
+        await context.bot.send_message(target_user_id, "🚫 تم إيقافك من إرسال الشكاوى لمدة 7 أيام.")
         await query.message.edit_text(query.message.text + "\n\n⏸️ العضو موقوف 7 أيام", reply_markup=None)
 
     elif action == "reply":
-        save_reply(admin_id, user_id)
-        await query.message.edit_text(query.message.text + "\n\n💬 أرسل الرد الآن في الخاص ليتم توجيهه للعضو.", reply_markup=None)
+        set_reply_target(admin_id, target_user_id)
+        await query.message.edit_text(
+            query.message.text + "\n\n💬 أرسل الرد الآن في الخاص ليتم توجيهه للعضو.",
+            reply_markup=None
+        )
 
-# Handlers
+# ------ إضافة Handlers ------
 application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, handle_private))
 application.add_handler(CallbackQueryHandler(handle_buttons))
 
-# Webhook setup
+# ------ تشغيل Webhook في Thread منفصل ------
 async_loop = None
 
 def run_async_loop():
@@ -207,25 +245,32 @@ def run_async_loop():
         await application.initialize()
         try:
             await application.bot.set_webhook(WEBHOOK_URL)
-            logger.info(f"✅ تم ضبط Webhook -> {WEBHOOK_URL}")
+            logger.info(f"✅ تم ضبط webhook -> {WEBHOOK_URL}")
         except Exception as ex:
-            logger.warning(f"⚠️ تعذر ضبط Webhook: {ex}")
+            logger.warning(f"⚠️ لم أتمكن من ضبط webhook تلقائيًا: {ex}")
     async_loop.run_until_complete(init_app())
     async_loop.run_forever()
 
 threading.Thread(target=run_async_loop, daemon=True).start()
 
+# ------ مسار Webhook للـ Flask ------
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def telegram_webhook():
     try:
         data = request.get_json(force=True)
+        if not data:
+            return "No data", 400
         update = Update.de_json(data, application.bot)
+        if async_loop is None:
+            logger.error("❌ الحلقة غير جاهزة بعد")
+            return "Service not ready", 503
         asyncio.run_coroutine_threadsafe(application.process_update(update), async_loop)
-        return "ok", 200
+        return "OK", 200
     except Exception as e:
-        logger.exception(f"Webhook Error: {e}")
-        return "error", 500
+        logger.exception(f"❌ خطأ في استلام webhook: {e}")
+        return "Error", 500
 
+# ------ بدء Flask ------
 if __name__ == "__main__":
-    logger.info("🚀 بدأ تشغيل البوت - Webhook جاهز")
+    logger.info("🚀 بدأ تشغيل Flask - الخادم سيستمع للطلبات")
     app.run(host="0.0.0.0", port=PORT)

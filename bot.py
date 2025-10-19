@@ -9,7 +9,6 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 )
-from datetime import datetime, timedelta
 
 # ------ إعداد السجلات ------
 logging.basicConfig(level=logging.INFO)
@@ -45,6 +44,7 @@ def save_blocked(data):
 
 def is_blocked(user_id):
     data = load_blocked()
+    from datetime import datetime
     if str(user_id) in data:
         expire = datetime.fromisoformat(data[str(user_id)])
         if datetime.now() < expire:
@@ -55,31 +55,10 @@ def is_blocked(user_id):
     return False
 
 def block_user(user_id, days=7):
+    from datetime import datetime, timedelta
     data = load_blocked()
     data[str(user_id)] = (datetime.now() + timedelta(days=days)).isoformat()
     save_blocked(data)
-
-# ------ حد رسالة يومية لكل عضو ------
-DAILY_FILE = "daily_users.json"
-
-def load_daily():
-    if os.path.exists(DAILY_FILE):
-        with open(DAILY_FILE, "r") as f:
-            return json.load(f)
-    return {}
-
-def save_daily(data):
-    with open(DAILY_FILE, "w") as f:
-        json.dump(data, f)
-
-def can_send_today(user_id):
-    data = load_daily()
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    if str(user_id) in data and data[str(user_id)] == today_str:
-        return False
-    data[str(user_id)] = today_str
-    save_daily(data)
-    return True
 
 # ------ إنشاء تطبيق البوت ------
 application = Application.builder().token(BOT_TOKEN).build()
@@ -87,29 +66,28 @@ application = Application.builder().token(BOT_TOKEN).build()
 # ------ قاموس لتخزين الردود المؤقتة لكل مشرف ------
 reply_targets = {}    # admin_id -> target_user_id
 
-MAX_CHARS = 200  # حد الأحرف للعضو والرد
-
 # ------ Handlers المستخدم ------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     if is_blocked(user_id):
         await update.message.reply_text("⏸️ تم إيقافك مؤقتًا من إرسال الشكاوى لمدة 7 أيام.")
         return
-    msg = (
-        "👋 مرحبًا! هذا البوت مخصص لاستقبال شكوى أو مقترحات أعضاء "
-        "غرفة علي مع الحق والحق مع علي، وسيتم عرضها لإدارة الغرفة.\n\n"
-        f"🔗 رابط الغرفة: @AliwAlhaq\n"
-        f"⚠️ الحد الأقصى للرسالة: {MAX_CHARS} حرف\n"
-        "❗ يمكنك إرسال رسالة واحدة يوميًا فقط."
+    welcome_text = (
+        "👋 مرحبًا! هذا البوت مخصص لاستقبال الشكاوى والاقتراحات لأعضاء غرفة علي مع الحق.\n\n"
+        "📌 يمكنك إرسال شكوى أو اقتراح واحد يوميًا.\n"
+        "📝 الحد الأقصى لكل رسالة: 200 حرف.\n"
+        "🔗 رابط الغرفة: @AliwAlhaq\n\n"
+        "سيتم عرض جميع الشكاوى والمقترحات في موضوع الشكاوى والمقترحات داخل مجموعة الإدارة."
     )
-    await update.message.reply_text(msg)
+    await update.message.reply_text(welcome_text)
 
 async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     text = update.message.text.strip()
 
-    if len(text) > MAX_CHARS:
-        await update.message.reply_text(f"⚠️ الحد الأقصى للرسالة هو {MAX_CHARS} حرف فقط.")
+    # الحد الأقصى للأحرف
+    if len(text) > 200:
+        await update.message.reply_text("⚠️ لا يمكن إرسال أكثر من 200 حرف في الرسالة.")
         return
 
     # إذا كان المرسل مشرف ينتظر الرد
@@ -123,11 +101,7 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
         del reply_targets[user.id]  # إزالة بعد الإرسال
         return
 
-    # تحقق من حد الرسالة اليومية
-    if not can_send_today(user.id):
-        await update.message.reply_text("⚠️ لقد أرسلت رسالة اليوم بالفعل، حاول غدًا.")
-        return
-
+    # إذا كان العضو عادي
     if is_blocked(user.id):
         await update.message.reply_text("⏸️ لا يمكنك إرسال شكاوى حاليًا. انتظر انتهاء مدة الإيقاف.")
         return
@@ -184,14 +158,11 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action == "reply":
         reply_targets[admin_id] = target_user_id
-        await query.message.edit_text(
-            query.message.text + "\n\n💬 أرسل الرد الآن في الخاص ليتم توجيهه للعضو.",
-            reply_markup=None
-        )
+        await query.message.edit_text(query.message.text + "\n\n💬 أرسل الرد الآن في الخاص ليتم توجيهه للعضو.", reply_markup=None)
 
 # ------ إضافة Handlers ------
 application.add_handler(CommandHandler("start", start))
-application.add_handler(MessageHandler(filters.TEXT & filters.PRIVATE, handle_private))
+application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, handle_private))
 application.add_handler(CallbackQueryHandler(handle_buttons))
 
 # ------ تشغيل Webhook في Thread منفصل ------

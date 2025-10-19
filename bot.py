@@ -161,8 +161,11 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context2.application.remove_handler(reply_handlers[admin_id])
             reply_handlers.pop(admin_id)
 
-        # إصلاح هنا: استخدام filters.User بدلاً من filters.USER
-        handler = MessageHandler(filters.User(admin_id) & filters.PRIVATE & filters.TEXT, handle_reply_message)
+        # ✅ إصلاح زر الرد: استخدام ChatType.PRIVATE
+        handler = MessageHandler(
+            filters.User(admin_id) & filters.ChatType.PRIVATE & filters.TEXT,
+            handle_reply_message
+        )
         context.application.add_handler(handler)
         reply_handlers[admin_id] = handler
 

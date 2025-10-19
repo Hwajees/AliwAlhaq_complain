@@ -36,7 +36,7 @@ DAILY_FILE = "daily_limit.json"
 REPLY_FILE = "reply_targets.json"
 MAX_CHARS = 200
 
-# دوال المساعدة
+# دوال مساعدة
 def load_json(path):
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
@@ -76,14 +76,15 @@ def save_reply(admin_id, user_id):
     data[str(admin_id)] = user_id
     save_json(REPLY_FILE, data)
 
-def pop_reply(admin_id):
+def get_reply_target(admin_id):
+    data = load_json(REPLY_FILE)
+    return int(data[str(admin_id)]) if str(admin_id) in data else None
+
+def clear_reply(admin_id):
     data = load_json(REPLY_FILE)
     if str(admin_id) in data:
-        user_id = data[str(admin_id)]
         del data[str(admin_id)]
         save_json(REPLY_FILE, data)
-        return user_id
-    return None
 
 # إنشاء التطبيق
 application = Application.builder().token(BOT_TOKEN).build()
@@ -100,7 +101,7 @@ welcome_text = (
 accept_text = "✅ تم قبول شكواك. شكرًا لتعاونك!"
 reject_text = "❌ تم رفض الشكوى بعد المراجعة."
 
-# Handlers
+# /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
         return
@@ -110,6 +111,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
+# الرسائل الخاصة
 async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
         return
@@ -117,30 +119,25 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     text = update.message.text.strip()
 
-    # تحقق من أن هذا المشرف يرد على عضو
-    target_id = pop_reply(user.id)
+    # --- رد المشرف على العضو ---
+    target_id = get_reply_target(user.id)
     if target_id:
         try:
-            # التأكد من أن العضو يمكن التواصل معه فعليًا
-            chat_info = await context.bot.get_chat(target_id)
             await context.bot.send_message(
                 chat_id=target_id,
                 text=f"📩 رد من الإدارة:\n\n{text}"
             )
             await update.message.reply_text("✅ تم إرسال الرد بنجاح إلى العضو.")
+            clear_reply(user.id)
         except Exception as e:
             logger.error(f"❌ خطأ أثناء إرسال الرد: {e}")
-            # إبلاغ المشرف بالسبب الحقيقي
             await update.message.reply_text(
-                "⚠️ لم أتمكن من إرسال الرد للعضو.\n"
-                "🚫 السبب المحتمل:\n"
-                "- العضو غادر المحادثة مع البوت.\n"
-                "- أو فعّل إعداد الخصوصية ضد الرسائل من البوتات.\n\n"
-                "✅ في هذه الحالة يمكن التواصل معه يدويًا."
+                "⚠️ لم أستطع إرسال الرد للعضو.\n"
+                "قد يكون غادر أو فعّل إعدادات الخصوصية تمنع الرسائل من البوت."
             )
         return
 
-    # عضو عادي يرسل شكوى
+    # --- عضو يرسل شكوى ---
     if is_blocked(user.id):
         await update.message.reply_text("🚫 تم إيقافك مؤقتًا من إرسال الشكاوى.")
         return
@@ -182,6 +179,7 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("✅ تم إرسال شكواك إلى الإدارة. سيتم التواصل معك عند الرد.")
 
+# الأزرار
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
